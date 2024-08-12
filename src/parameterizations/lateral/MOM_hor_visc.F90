@@ -26,6 +26,8 @@ use MOM_verticalGrid,          only : verticalGrid_type
 use MOM_variables,             only : accel_diag_ptrs, thermo_var_ptrs
 use MOM_Zanna_Bolton,          only : ZB2020_lateral_stress, ZB2020_init, ZB2020_end
 use MOM_Zanna_Bolton,          only : ZB2020_CS, ZB2020_copy_gradient_and_thickness
+use MOM_EPF_ANN,               only : EPF_init, EPF_end, EPF_copy_gradient_and_thickness, &
+                                      EPF_CS, EPF_lateral_stress
 
 implicit none ; private
 
@@ -125,6 +127,8 @@ type, public :: hor_visc_CS ; private
   logical :: use_cont_thick  !< If true, thickness at velocity points adopts h[uv] in BT_cont from continuity solver.
   type(ZB2020_CS) :: ZB2020  !< Zanna-Bolton 2020 control structure.
   logical :: use_ZB2020      !< If true, use Zanna-Bolton 2020 parameterization.
+  type(EPF_CS) :: EPF        !< EPF ANN control structure.
+  logical :: use_EPF_ANN     !< If true, use EPF ANN parameterization.
 
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: Kh_bg_xx
                       !< The background Laplacian viscosity at h points [L2 T-1 ~> m2 s-1].
@@ -1475,6 +1479,14 @@ subroutine horizontal_viscosity(u, v, h, uh, vh, diffu, diffv, MEKE, VarMix, G, 
            G, GV, CS%ZB2020, k)
     endif
 
+    ! Pass the velocity gradients and thickness to EPF_ANN
+    if (CS%use_EPF_ANN) then
+      call EPF_copy_gradient_and_thickness(    &
+           sh_xx, sh_xy, vort_xy,              &
+           hq,                                 &
+           G, GV, CS%EPF, k)
+    endif
+
     if (CS%Laplacian) then
       ! Determine the Laplacian viscosity at q points, using the
       ! largest value from several parameterizations. Also get the
@@ -2042,6 +2054,11 @@ subroutine horizontal_viscosity(u, v, h, uh, vh, diffu, diffv, MEKE, VarMix, G, 
                                CS%dx2h, CS%dy2h, CS%dx2q, CS%dy2q)
   endif
 
+  if (CS%use_EPF_ANN) then
+    call EPF_lateral_stress(u, v, h, diffu, diffv, G, GV, CS%EPF, &
+                               CS%dx2h, CS%dy2h, CS%dx2q, CS%dy2q)
+  endif
+
 end subroutine horizontal_viscosity
 
 !> Allocates space for and calculates static variables used by horizontal_viscosity().
@@ -2117,6 +2134,7 @@ subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
 
   ! init control structure
   call ZB2020_init(Time, G, GV, US, param_file, diag, CS%ZB2020, CS%use_ZB2020)
+  call EPF_init(Time, G, GV, US, param_file, diag, CS%EPF, CS%use_EPF_ANN)
 
   CS%initialized = .true.
 
@@ -3188,6 +3206,10 @@ subroutine hor_visc_end(CS)
 
   if (CS%use_ZB2020) then
     call ZB2020_end(CS%ZB2020)
+  endif
+
+  if (CS%use_EPF_ANN) then
+    call EPF_end(CS%EPF)
   endif
 
 end subroutine hor_visc_end
