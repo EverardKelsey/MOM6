@@ -2056,7 +2056,7 @@ subroutine horizontal_viscosity(u, v, h, uh, vh, diffu, diffv, MEKE, VarMix, G, 
 
   if (CS%use_EPF_ANN) then
     call EPF_lateral_stress(u, v, h, diffu, diffv, G, GV, CS%EPF, &
-                               CS%dx2h, CS%dy2h, CS%dx2q, CS%dy2q)
+                               CS%dx2h, CS%dy2h, CS%dx2q, CS%dy2q, VarMix)
   endif
 
 end subroutine horizontal_viscosity
