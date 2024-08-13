@@ -4,19 +4,17 @@ module MOM_EPF_ANN
 ! This file is part of MOM6. See LICENSE.md for the license.
 use MOM_grid,          only : ocean_grid_type
 use MOM_verticalGrid,  only : verticalGrid_type
-use MOM_diag_mediator, only : diag_ctrl, time_type
+use MOM_diag_mediator, only : diag_ctrl, time_type, post_data, register_diag_field
 use MOM_file_parser,   only : get_param, log_version, param_file_type
 use MOM_unit_scaling,  only : unit_scale_type
-use MOM_diag_mediator, only : post_data, register_diag_field
 use MOM_domains,       only : create_group_pass, do_group_pass, group_pass_type, &
-                              start_group_pass, complete_group_pass
+                              start_group_pass, complete_group_pass, &
+                              To_North, To_East, pass_var, CORNER
 use MOM_coms,          only : reproducing_sum
-use MOM_domains,       only : To_North, To_East
-use MOM_domains,       only : pass_var, CORNER
-use MOM_cpu_clock,     only : cpu_clock_id, cpu_clock_begin, cpu_clock_end
-use MOM_cpu_clock,     only : CLOCK_MODULE, CLOCK_ROUTINE
+use MOM_cpu_clock,     only : cpu_clock_id, cpu_clock_begin, cpu_clock_end, &
+                              CLOCK_MODULE, CLOCK_ROUTINE
 use MOM_ANN,           only : ANN_init, ANN_apply, ANN_end, ANN_CS
-use MOM_error_handler, only : MOM_mesg
+use MOM_error_handler, only : MOM_mesg 
 use MOM_spatial_means, only : global_volume_mean
 use MOM_lateral_mixing_coeffs, only : VarMix_CS
 
@@ -40,7 +38,6 @@ type, public :: EPF_CS ; private
                        !! points including metric terms [T-1 ~> s-1]
           vort_xy, &   !< Vertical vorticity (dv/dx - du/dy) in q (CORNER)
                        !! points including metric terms [T-1 ~> s-1]
-          div_xx,  &   !< Estimate of horizontal divergence at h-points [T-1 ~> s-1]
           hq           !< Thickness in CORNER points [H ~> m or kg m-2]
 
 
@@ -50,8 +47,7 @@ type, public :: EPF_CS ; private
           Txy,     & !< Subgrid stress xy component in q [L2 T-2 ~> m2 s-2]
           Txz,     & !< Subgrid x component of form stress in h [L2 T-2 ~> m2 s-2]
           Tyz      !& !< Subgrid y component of form stress in h [L2 T-2 ~> m2 s-2]
-          !str_xx,  & !< Subgrid stress xx component in h, copy from MOM_hor_visc.F90 [L2 T-2 ~> m2 s-2]
-          !str_xy     !< Subgrid stress xy component in q, copy from MOM_hor_visc.F90 [L2 T-2 ~> m2 s-2]
+
 
   real, dimension(:,:), allocatable :: &
           kappa_h, & !< Scaling coefficient in h points [L2 ~> m2]
@@ -59,16 +55,6 @@ type, public :: EPF_CS ; private
 
   real, allocatable ::    &
         Coriolis_h(:,:)     !< Coriolis parameter at h points [T ~> s]
-
-  real, dimension(:,:), allocatable ::    &
-        maskw_h,  & !< Mask of land point at h points multiplied by filter weight [nondim]
-        maskw_q     !< Same mask but for q points [nondim]
-
-  real, dimension(:,:,:), allocatable :: &
-        Visc_coef,    & !< Predicted Viscosity coefficient
-        SGS_KE          !< Subgrid kinetic energy
-
-  real :: backscatter_ratio !< The ratio of backscattered energy to the dissipated energy
 
   !integer :: use_ann  !< 0: ANN is turned off, 1: default ANN for EPF
   logical :: use_EPF_ANN !< turn on EPF ANN parameterisation
@@ -162,57 +148,26 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   ! Register fields for output from this module.
   CS%diag => diag
 
-  !CS%id_EPFu = register_diag_field('ocean_model', 'EPFu', diag%axesCuL, Time, &
-      !'Zonal Acceleration from EPF ANN param', 'm s-2', conversion=US%L_T2_to_m_s2)
-  !CS%id_EPFv = register_diag_field('ocean_model', 'EPFv', diag%axesCvL, Time, &
-      !'Meridional Acceleration from EPF ANN param', 'm s-2', conversion=US%L_T2_to_m_s2)
-  !CS%id_KE_EPF = register_diag_field('ocean_model', 'KE_EPF', diag%axesTL, Time, &
-      !'Kinetic Energy Source from Horizontal Viscosity', &
-      !'m3 s-3', conversion=GV%H_to_m*(US%L_T_to_m_s**2)*US%s_to_T)
-
   CS%id_Txx = register_diag_field('ocean_model', 'Txx', diag%axesTL, Time, &
       'Diagonal term (Txx) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
   CS%id_Tyy = register_diag_field('ocean_model', 'Tyy', diag%axesTL, Time, &
       'Diagonal term (Tyy) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
   CS%id_Txy = register_diag_field('ocean_model', 'Txy', diag%axesBL, Time, &
       'Off-diagonal term (Txy) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
-  CS%id_Txz = register_diag_field('ocean_model', 'Txz', diag%axesBL, Time, &
+  CS%id_Txz = register_diag_field('ocean_model', 'Txz', diag%axesTL, Time, &
       'Zonal form stress difference in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
-  CS%id_Tyz = register_diag_field('ocean_model', 'Tyz', diag%axesBL, Time, &
+  CS%id_Tyz = register_diag_field('ocean_model', 'Tyz', diag%axesTL, Time, &
       'Meridional form stress difference in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
-      
-  !CS%id_visc_coef = register_diag_field('ocean_model', 'visc_coef', diag%axesTL, Time, &
-  !    'Local Viscosity coefficient', 'm2 s-1')
-  !CS%id_SGS_KE = register_diag_field('ocean_model', 'SGS_KE', diag%axesTL, Time, &
-  !    'Subgrid kinetic energy', 'm3 s-2', conversion=US%L_T_to_m_s**2 * GV%H_to_m)
-  !CS%id_Esource_EPF = register_diag_field('ocean_model', 'Esource_EPF', diag%axesTL, Time, &
-  !    'SGS KE budget: Energy source by EPF', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
-  !CS%id_Esource_adv = register_diag_field('ocean_model', 'Esource_adv', diag%axesTL, Time, &
-  !    'SGS KE budget: Energy source by advection of SGS KE', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
-  !CS%id_Esource_dis = register_diag_field('ocean_model', 'Esource_dis', diag%axesTL, Time, &
-  !    'SGS KE budget: Energy source by advection of SGS KE', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
-
-  
-  !CS%id_h = register_diag_field('ocean_model', 'h_EPF', diag%axesTL, Time, &
-  !  'Thickness in EPF module', 'm', conversion=GV%H_to_m)
-  !CS%id_u = register_diag_field('ocean_model', 'u_EPF', diag%axesCuL, Time, &
-  !  'Zonal velocity in EPF module', 'ms-1', conversion=US%L_T_to_m_s)
-  !CS%id_v = register_diag_field('ocean_model', 'v_EPF', diag%axesCvL, Time, &
-  !  'Meridional velocity in EPF module', 'ms-1', conversion=US%L_T_to_m_s)
-
- 
 
   ! Clock IDs
   ! Only module is measured with syncronization. While smaller
   ! parts are measured without - because these are nested clocks.
   CS%id_clock_module = cpu_clock_id('(Ocean EPF param)', grain=CLOCK_MODULE)
   CS%id_clock_copy = cpu_clock_id('(EPF copy fields)', grain=CLOCK_ROUTINE, sync=.false.)
-  !CS%id_clock_cdiss = cpu_clock_id('(EPF compute c_diss)', grain=CLOCK_ROUTINE, sync=.false.)
   CS%id_clock_stress = cpu_clock_id('(EPF compute stress)', grain=CLOCK_ROUTINE, sync=.false.)
   CS%id_clock_stress_ANN = cpu_clock_id('(EPF compute stress ANN)', grain=CLOCK_ROUTINE, sync=.false.)
   CS%id_clock_divergence = cpu_clock_id('(EPF compute divergence)', grain=CLOCK_ROUTINE, sync=.false.)
   CS%id_clock_mpi = cpu_clock_id('(EPF filter MPI exchanges)', grain=CLOCK_ROUTINE, sync=.false.)
-  !CS%id_clock_filter = cpu_clock_id('(EPF filter no MPI)', grain=CLOCK_ROUTINE, sync=.false.)
   CS%id_clock_post = cpu_clock_id('(EPF post data)', grain=CLOCK_ROUTINE, sync=.false.)
   CS%id_clock_source = cpu_clock_id('(EPF compute energy source)', grain=CLOCK_ROUTINE, sync=.false.)
 
@@ -226,12 +181,10 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   ! with full halo because they potentially may be filtered
   ! with marching halo algorithm
   allocate(CS%sh_xx(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
-  allocate(CS%div_xx(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%sh_xy(SZIB_(G),SZJB_(G),SZK_(GV)), source=0.)
   allocate(CS%vort_xy(SZIB_(G),SZJB_(G),SZK_(GV)), source=0.)
   allocate(CS%hq(SZIB_(G),SZJB_(G),SZK_(GV)))
 
-  allocate(CS%Visc_coef(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
 
   allocate(CS%Txx(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%Tyy(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
@@ -694,12 +647,9 @@ end subroutine EPF_lateral_stress
 subroutine EPF_end(CS)
   type(EPF_CS), intent(inout) :: CS  !< EPF control structure.
   deallocate(CS%sh_xx)
-  deallocate(CS%div_xx)
   deallocate(CS%sh_xy)
   deallocate(CS%vort_xy)
   deallocate(CS%hq)
-
-  deallocate(CS%Visc_coef)
 
   deallocate(CS%Txx)
   deallocate(CS%Tyy)
