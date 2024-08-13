@@ -150,12 +150,16 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
 
   CS%id_Txx = register_diag_field('ocean_model', 'Txx', diag%axesTL, Time, &
       'Diagonal term (Txx) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+
   CS%id_Tyy = register_diag_field('ocean_model', 'Tyy', diag%axesTL, Time, &
       'Diagonal term (Tyy) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+
   CS%id_Txy = register_diag_field('ocean_model', 'Txy', diag%axesBL, Time, &
       'Off-diagonal term (Txy) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+
   CS%id_Txz = register_diag_field('ocean_model', 'Txz', diag%axesTL, Time, &
       'Zonal form stress difference in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+
   CS%id_Tyz = register_diag_field('ocean_model', 'Tyz', diag%axesTL, Time, &
       'Meridional form stress difference in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
 
@@ -632,11 +636,11 @@ subroutine EPF_lateral_stress(u, v, h, diffu, diffv, G, GV, CS, &
                                  G, GV, CS)
 
   call cpu_clock_begin(CS%id_clock_post)
-  if (CS%id_Txx>0)       call post_data(CS%id_Txx, CS%Txx, CS%diag)
-  if (CS%id_Tyy>0)       call post_data(CS%id_Tyy, CS%Tyy, CS%diag)
-  if (CS%id_Txy>0)       call post_data(CS%id_Txy, CS%Txy, CS%diag)
-  if (CS%id_Txz>0)       call post_data(CS%id_Txz, CS%Txz, CS%diag)
-  if (CS%id_Tyz>0)       call post_data(CS%id_Tyz, CS%Tyz, CS%diag)
+  call post_data(CS%id_Txx, CS%Txx, CS%diag)
+  call post_data(CS%id_Tyy, CS%Tyy, CS%diag)
+  call post_data(CS%id_Txy, CS%Txy, CS%diag)
+  call post_data(CS%id_Txz, CS%Txz, CS%diag)
+  call post_data(CS%id_Tyz, CS%Tyz, CS%diag)
   call cpu_clock_end(CS%id_clock_post)
 
   call cpu_clock_end(CS%id_clock_module)
