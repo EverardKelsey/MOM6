@@ -83,12 +83,12 @@ type, public :: EPF_CS ; private
   type(diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
   integer :: id_EPFu = -1, id_EPFv = -1, id_KE_EPF = -1
-  integer :: id_Txx = 1
-  integer :: id_Tyy = 1
-  integer :: id_Txy = 1
-  integer :: id_Txz = 1
-  integer :: id_Tyz = 1
-  integer :: id_h = 1, id_u = 1, id_v = 1
+  integer :: id_Txx = -1
+  integer :: id_Tyy = -1
+  integer :: id_Txy = -1
+  integer :: id_Txz = -1
+  integer :: id_Tyz = -1
+  integer :: id_h = -1, id_u = -1, id_v = -1
   integer :: id_GM_coef = -1, id_PE_GM = -1
   integer :: id_attenuation = -1
   integer :: id_SGS_KE = -1
