@@ -83,12 +83,12 @@ type, public :: EPF_CS ; private
   type(diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
   integer :: id_EPFu = -1, id_EPFv = -1, id_KE_EPF = -1
-  integer :: id_Txx = -1
-  integer :: id_Tyy = -1
-  integer :: id_Txy = -1
-  integer :: id_Txz = -1
-  integer :: id_Tyz = -1
-  integer :: id_h = -1, id_u = -1, id_v = -1
+  integer :: id_Txx = 1
+  integer :: id_Tyy = 1
+  integer :: id_Txy = 1
+  integer :: id_Txz = 1
+  integer :: id_Tyz = 1
+  integer :: id_h = 1, id_u = 1, id_v = 1
   integer :: id_GM_coef = -1, id_PE_GM = -1
   integer :: id_attenuation = -1
   integer :: id_SGS_KE = -1
@@ -169,13 +169,13 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   ! Register fields for output from this module.
   CS%diag => diag
 
-  CS%id_EPFu = register_diag_field('ocean_model', 'EPFu', diag%axesCuL, Time, &
-      'Zonal Acceleration from EPF ANN param', 'm s-2', conversion=US%L_T2_to_m_s2)
-  CS%id_EPFv = register_diag_field('ocean_model', 'EPFv', diag%axesCvL, Time, &
-      'Meridional Acceleration from EPF ANN param', 'm s-2', conversion=US%L_T2_to_m_s2)
-  CS%id_KE_EPF = register_diag_field('ocean_model', 'KE_EPF', diag%axesTL, Time, &
-      'Kinetic Energy Source from Horizontal Viscosity', &
-      'm3 s-3', conversion=GV%H_to_m*(US%L_T_to_m_s**2)*US%s_to_T)
+  !CS%id_EPFu = register_diag_field('ocean_model', 'EPFu', diag%axesCuL, Time, &
+      !'Zonal Acceleration from EPF ANN param', 'm s-2', conversion=US%L_T2_to_m_s2)
+  !CS%id_EPFv = register_diag_field('ocean_model', 'EPFv', diag%axesCvL, Time, &
+      !'Meridional Acceleration from EPF ANN param', 'm s-2', conversion=US%L_T2_to_m_s2)
+  !CS%id_KE_EPF = register_diag_field('ocean_model', 'KE_EPF', diag%axesTL, Time, &
+      !'Kinetic Energy Source from Horizontal Viscosity', &
+      !'m3 s-3', conversion=GV%H_to_m*(US%L_T_to_m_s**2)*US%s_to_T)
 
   CS%id_Txx = register_diag_field('ocean_model', 'Txx', diag%axesTL, Time, &
       'Diagonal term (Txx) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
@@ -188,24 +188,24 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   CS%id_Tyz = register_diag_field('ocean_model', 'Tyz', diag%axesBL, Time, &
       'Meridional form stress difference in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
       
-  CS%id_visc_coef = register_diag_field('ocean_model', 'visc_coef', diag%axesTL, Time, &
-      'Local Viscosity coefficient', 'm2 s-1')
-  CS%id_SGS_KE = register_diag_field('ocean_model', 'SGS_KE', diag%axesTL, Time, &
-      'Subgrid kinetic energy', 'm3 s-2', conversion=US%L_T_to_m_s**2 * GV%H_to_m)
-  CS%id_Esource_EPF = register_diag_field('ocean_model', 'Esource_EPF', diag%axesTL, Time, &
-      'SGS KE budget: Energy source by EPF', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
-  CS%id_Esource_adv = register_diag_field('ocean_model', 'Esource_adv', diag%axesTL, Time, &
-      'SGS KE budget: Energy source by advection of SGS KE', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
-  CS%id_Esource_dis = register_diag_field('ocean_model', 'Esource_dis', diag%axesTL, Time, &
-      'SGS KE budget: Energy source by advection of SGS KE', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
+  !CS%id_visc_coef = register_diag_field('ocean_model', 'visc_coef', diag%axesTL, Time, &
+  !    'Local Viscosity coefficient', 'm2 s-1')
+  !CS%id_SGS_KE = register_diag_field('ocean_model', 'SGS_KE', diag%axesTL, Time, &
+  !    'Subgrid kinetic energy', 'm3 s-2', conversion=US%L_T_to_m_s**2 * GV%H_to_m)
+  !CS%id_Esource_EPF = register_diag_field('ocean_model', 'Esource_EPF', diag%axesTL, Time, &
+  !    'SGS KE budget: Energy source by EPF', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
+  !CS%id_Esource_adv = register_diag_field('ocean_model', 'Esource_adv', diag%axesTL, Time, &
+  !    'SGS KE budget: Energy source by advection of SGS KE', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
+  !CS%id_Esource_dis = register_diag_field('ocean_model', 'Esource_dis', diag%axesTL, Time, &
+  !    'SGS KE budget: Energy source by advection of SGS KE', 'm3 s-3', conversion=US%L_T_to_m_s**2 * GV%H_to_m / US%T_to_s)
 
   
-  CS%id_h = register_diag_field('ocean_model', 'h_EPF', diag%axesTL, Time, &
-    'Thickness in EPF module', 'm', conversion=GV%H_to_m)
-  CS%id_u = register_diag_field('ocean_model', 'u_EPF', diag%axesCuL, Time, &
-    'Zonal velocity in EPF module', 'ms-1', conversion=US%L_T_to_m_s)
-  CS%id_v = register_diag_field('ocean_model', 'v_EPF', diag%axesCvL, Time, &
-    'Meridional velocity in EPF module', 'ms-1', conversion=US%L_T_to_m_s)
+  !CS%id_h = register_diag_field('ocean_model', 'h_EPF', diag%axesTL, Time, &
+  !  'Thickness in EPF module', 'm', conversion=GV%H_to_m)
+  !CS%id_u = register_diag_field('ocean_model', 'u_EPF', diag%axesCuL, Time, &
+  !  'Zonal velocity in EPF module', 'ms-1', conversion=US%L_T_to_m_s)
+  !CS%id_v = register_diag_field('ocean_model', 'v_EPF', diag%axesCvL, Time, &
+  !  'Meridional velocity in EPF module', 'ms-1', conversion=US%L_T_to_m_s)
 
  
 
