@@ -82,18 +82,11 @@ type, public :: EPF_CS ; private
 
   type(diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
-  integer :: id_EPFu = -1, id_EPFv = -1, id_KE_EPF = -1
   integer :: id_Txx = -1
   integer :: id_Tyy = -1
   integer :: id_Txy = -1
   integer :: id_Txz = -1
   integer :: id_Tyz = -1
-  integer :: id_h = -1, id_u = -1, id_v = -1
-  integer :: id_GM_coef = -1, id_PE_GM = -1
-  integer :: id_attenuation = -1
-  integer :: id_SGS_KE = -1
-  integer :: id_Esource_EPF = -1, id_Esource_adv = -1, id_Esource_dis = -1
-  integer :: id_visc_coef = -1
   !>@}
 
   !>@{ CPU time clock IDs
@@ -576,9 +569,6 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
   call cpu_clock_begin(CS%id_clock_divergence)
 
 
-  save_EPFu = (CS%id_EPFu > 0) .or. (CS%id_KE_EPF > 0)
-  save_EPFv = (CS%id_EPFv > 0) .or. (CS%id_KE_EPF > 0)
-
   is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
 
@@ -629,11 +619,6 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
 
   enddo ! end of k loop  
   call cpu_clock_end(CS%id_clock_divergence)
-
-  call cpu_clock_begin(CS%id_clock_post)
-  if (CS%id_EPFu>0)   call post_data(CS%id_EPFu, EPFu, CS%diag)
-  if (CS%id_EPFv>0)   call post_data(CS%id_EPFv, EPFv, CS%diag)
-  call cpu_clock_end(CS%id_clock_post)
 
 end subroutine compute_stress_divergence
 
@@ -699,10 +684,6 @@ subroutine EPF_lateral_stress(u, v, h, diffu, diffv, G, GV, CS, &
   if (CS%id_Txy>0)       call post_data(CS%id_Txy, CS%Txy, CS%diag)
   if (CS%id_Txz>0)       call post_data(CS%id_Txz, CS%Txz, CS%diag)
   if (CS%id_Tyz>0)       call post_data(CS%id_Tyz, CS%Tyz, CS%diag)
-
-  if (CS%id_h>0)       call post_data(CS%id_h, h, CS%diag)
-  if (CS%id_u>0)       call post_data(CS%id_u, u, CS%diag)
-  if (CS%id_v>0)       call post_data(CS%id_v, v, CS%diag)
   call cpu_clock_end(CS%id_clock_post)
 
   call cpu_clock_end(CS%id_clock_module)
