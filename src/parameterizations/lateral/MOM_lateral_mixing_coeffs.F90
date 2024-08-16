@@ -61,6 +61,8 @@ type, public :: VarMix_CS
                                   !! This parameter is set depending on other parameters.
   logical :: calculate_Eady_growth_rate !< If true, calculate all the Eady growth rates.
                                   !! This parameter is set depending on other parameters.
+  logical :: return_slopes_only   !< An added parameter to allow to calculation of interface slopes
+                                  !! to use as input to other parameterisations
   logical :: use_stanley_iso      !< If true, use Stanley parameterization in MOM_isopycnal_slopes
   logical :: use_simpler_Eady_growth_rate !< If true, use a simpler method to calculate the
                                   !! Eady growth rate that avoids division by layer thickness.
@@ -160,6 +162,7 @@ type, public :: VarMix_CS
   integer :: id_N2_u=-1, id_N2_v=-1, id_S2_u=-1, id_S2_v=-1
   integer :: id_dzu=-1, id_dzv=-1, id_dzSxN=-1, id_dzSyN=-1
   integer :: id_Rd_dx=-1, id_KH_u_QG = -1, id_KH_v_QG = -1
+  !!! integer :: id_slope_x=-1 ! Kelsey adding this to output slope_x to diag file
   type(diag_ctrl), pointer :: diag !< A structure that is used to regulate the
                                    !! timing of diagnostic output.
   !>@}
@@ -493,13 +496,25 @@ subroutine calc_slope_functions(h, tv, dt, G, GV, US, CS, OBC)
                                   dzSxN=dzSxN, dzSyN=dzSyN, halo=1, OBC=OBC)
       call calc_Eady_growth_rate_2D(CS, G, GV, US, h, e, dzu, dzv, dzSxN, dzSyN, CS%SN_u, CS%SN_v)
     elseif (CS%use_stored_slopes) then
-      call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
+      if (CS%return_slopes_only) then
+        call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
+                                    CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v, halo=1, OBC=OBC)
+      else
+        call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
                                   CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v, halo=1, OBC=OBC)
-      call calc_Visbeck_coeffs_old(h, CS%slope_x, CS%slope_y, N2_u, N2_v, G, GV, US, CS)
+        call calc_Visbeck_coeffs_old(h, CS%slope_x, CS%slope_y, N2_u, N2_v, G, GV, US, CS)
+      endif
     else
       call calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
     endif
   endif
+  
+  !!! Adding another if statement for my own purposes
+  if (CS%return_slopes_only) then
+    call find_eta(h, tv, G, GV, US, e, halo_size=1)
+    call calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
+  endif
+  !!!
 
   if (query_averaging_enabled(CS%diag)) then
     if (CS%id_dzu > 0) call post_data(CS%id_dzu, dzu, CS%diag)
@@ -854,11 +869,14 @@ subroutine calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
   if (.not. CS%initialized) call MOM_error(FATAL, "calc_slope_functions_using_just_e: "// &
          "Module must be initialized before it is used.")
 
+  !if (.not. CS%calculate_Eady_growth_rate .and. .not. CS%return_slopes_only) return
   if (.not. CS%calculate_Eady_growth_rate) return
   if (.not. allocated(CS%SN_u)) call MOM_error(FATAL, "calc_slope_function:"// &
          "%SN_u is not associated with use_variable_mixing.")
   if (.not. allocated(CS%SN_v)) call MOM_error(FATAL, "calc_slope_function:"// &
          "%SN_v is not associated with use_variable_mixing.")
+  
+  
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
@@ -867,6 +885,24 @@ subroutine calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
   dZ_cutoff = real(2*nz) * (GV%Angstrom_Z + GV%dz_subroundoff)
 
   use_dztot = CS%full_depth_Eady_growth_rate ! .or. .not.(GV%Boussinesq or GV%semi_Boussinesq)
+
+  !!! Adding this to just get slopes out?
+  if (CS%return_slopes_only) then
+    do k = 1, nz+1
+      do j=js-1,je+1 ; do I=is-1,ie
+        CS%slope_x(I,j,k) = ((e(i+1,j,k)-e(i,j,k))*G%IdxCu(I,j))*G%mask2dCu(I,j)
+        ! Mask slopes where interface intersects topography
+        !if (min(h(i,j,k),h(i+1,j,k)) < H_cutoff) CS%slope_x(I,j,k) = 0.
+      enddo ; enddo
+      do J=js-1,je ; do i=is-1,ie+1
+        CS%slope_y(i,J,k) = ((e(i,j+1,k)-e(i,j,k))*G%IdyCv(i,J))*G%mask2dCv(i,J)
+        ! Mask slopes where interface intersects topography
+        if (min(h(i,j,k),h(i,j+1,k)) < H_cutoff) CS%slope_y(i,J,k) = 0.
+      enddo ; enddo
+    enddo
+    !call post_data(CS%id_slope_x, CS%slope_x, CS%diag)
+  endif
+  !!!
 
   if (use_dztot) then
     !$OMP parallel do default(shared)
@@ -1276,7 +1312,7 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
   CS%calculate_cg1 = CS%calculate_cg1 .or. use_FGNV_streamfn .or. CS%khth_use_ebt_struct .or. CS%kdgl90_use_ebt_struct
   CS%calculate_Rd_dx = CS%calculate_Rd_dx .or. use_MEKE
   ! Indicate whether to calculate the Eady growth rate
-  CS%calculate_Eady_growth_rate = use_MEKE .or. (KhTr_Slope_Cff>0.) .or. (KhTh_Slope_Cff>0.)
+  CS%calculate_Eady_growth_rate = use_MEKE .or. (KhTr_Slope_Cff>0.) .or. (KhTh_Slope_Cff>0.) .or. CS%return_slopes_only
   call get_param(param_file, mdl, "KHTR_PASSIVITY_COEFF", KhTr_passivity_coeff, &
                  units="nondim", default=0., do_not_log=.true.)
   CS%calculate_Rd_dx = CS%calculate_Rd_dx .or. (KhTr_passivity_coeff>0.)
@@ -1289,6 +1325,9 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
   call get_param(param_file, mdl, "USE_STANLEY_ISO", CS%use_stanley_iso, &
                  "If true, turn on Stanley SGS T variance parameterization "// &
                  "in isopycnal slope code.", default=.false.)
+  call get_param(param_file, mdl, "RETURN_SLOPES_ONLY", CS%return_slopes_only, &
+                 "If true, only use this module to return interface slopes", &
+                 default=.false.)
   if (CS%use_stanley_iso) then
     call get_param(param_file, mdl, "STANLEY_COEFF", Stanley_coeff, &
                  "Coefficient correlating the temperature gradient and SGS T variance.", &
@@ -1329,6 +1368,13 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
                  "more sensible values of T & S into thin layers.", &
                  units="m2 s-1", default=1.0e-6, scale=GV%m2_s_to_HZ_T)
   endif
+  
+  !!!! Adding for use of interface slopes in parameterisation method
+  if (CS%return_slopes_only .and. .not. CS%use_stored_slopes) then
+   allocate(CS%slope_x(IsdB:IedB,jsd:jed,GV%ke+1), source=0.0)
+   allocate(CS%slope_y(isd:ied,JsdB:JedB,GV%ke+1), source=0.0)
+  endif
+  !!!
 
   if (CS%calculate_Eady_growth_rate) then
     in_use = .true.
@@ -1654,6 +1700,11 @@ subroutine VarMix_end(CS)
     deallocate(CS%ebt_struct)
 
   if (CS%use_stored_slopes) then
+    deallocate(CS%slope_x)
+    deallocate(CS%slope_y)
+  endif
+
+  if (.not. CS%use_stored_slopes .and. CS%return_slopes_only) then
     deallocate(CS%slope_x)
     deallocate(CS%slope_y)
   endif

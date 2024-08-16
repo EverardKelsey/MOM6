@@ -255,7 +255,7 @@ contains
 !!   h(is-1:ie+1,js-1:je+1) or up to h(is-2:ie+2,js-2:je+2) with some Leith options.
 subroutine horizontal_viscosity(u, v, h, uh, vh, diffu, diffv, MEKE, VarMix, G, GV, US, &
                                 CS, tv, dt, OBC, BT, TD, ADp, hu_cont, hv_cont)
-  type(ocean_grid_type),         intent(in)  :: G      !< The ocean's grid structure.
+  type(ocean_grid_type),         intent(inout)  :: G      !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)  :: GV     !< The ocean's vertical grid structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
                                  intent(in)  :: u      !< The zonal velocity [L T-1 ~> m s-1].
@@ -2055,8 +2055,8 @@ subroutine horizontal_viscosity(u, v, h, uh, vh, diffu, diffv, MEKE, VarMix, G, 
   endif
 
   if (CS%use_EPF_ANN) then
-    call EPF_lateral_stress(u, v, h, diffu, diffv, G, GV, CS%EPF, &
-                               CS%dx2h, CS%dy2h, CS%dx2q, CS%dy2q, VarMix)
+    call EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS%EPF, &
+                            CS%dx2h, CS%dy2h, CS%dx2q, CS%dy2q, VarMix, US, OBC)
   endif
 
 end subroutine horizontal_viscosity
@@ -2066,7 +2066,7 @@ end subroutine horizontal_viscosity
 !! are used in horizontal_viscosity().
 subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
   type(time_type),         intent(in)    :: Time !< Current model time.
-  type(ocean_grid_type),   intent(inout) :: G    !< The ocean's grid structure.
+  type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure.
   type(verticalGrid_type), intent(in)    :: GV   !< The ocean's vertical grid structure
   type(unit_scale_type),   intent(in)    :: US   !< A dimensional unit scaling type
   type(param_file_type),   intent(in)    :: param_file !< A structure to parse for run-time
