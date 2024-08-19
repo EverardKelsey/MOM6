@@ -128,8 +128,8 @@ type, public :: EPF_CS ; private
   type(group_pass_type) :: &
       pass_Tq, pass_Th, &        !< handles for halo passes of Txy and Txx, Tyy
       pass_xx, pass_xy           !< handles for halo passes of sh_xx and sh_xy, vort_xy
-  integer :: Stress_halo = -1, & !< The halo size in filter of the stress tensor
-             HPF_halo = -1       !< The halo size in filter of the velocity gradient
+  !integer :: Stress_halo = -1!, & !< The halo size in filter of the stress tensor
+            ! HPF_halo = -1       !< The halo size in filter of the velocity gradient
   !>@}
 
 end type EPF_CS
@@ -338,12 +338,12 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
     CS%kappa_q(I,J) = -CS%amplitude * G%areaBu(I,J) * G%mask2dBu(I,J)
   enddo; enddo
 
-  CS%HPF_halo = max(min(G%Domain%nihalo, G%Domain%njhalo), 2)
-  call create_group_pass(CS%pass_xx, CS%sh_xx, G%Domain, halo=CS%HPF_halo)
-  call create_group_pass(CS%pass_xy, CS%sh_xy, G%Domain, halo=CS%HPF_halo, &
-      position=CORNER)
-  call create_group_pass(CS%pass_xy, CS%vort_xy, G%Domain, halo=CS%HPF_halo, &
-      position=CORNER)
+  !CS%HPF_halo = max(min(G%Domain%nihalo, G%Domain%njhalo), 2)
+  ! call create_group_pass(CS%pass_xx, CS%sh_xx, G%Domain, halo=CS%HPF_halo)
+  ! call create_group_pass(CS%pass_xy, CS%sh_xy, G%Domain, halo=CS%HPF_halo, &
+  !     position=CORNER)
+  ! call create_group_pass(CS%pass_xy, CS%vort_xy, G%Domain, halo=CS%HPF_halo, &
+  !     position=CORNER)
 
 end subroutine EPF_init
 
