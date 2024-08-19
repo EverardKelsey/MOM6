@@ -34,14 +34,10 @@ type, public :: EPF_CS ; private
   real      :: amplitude        !< The nondimensional scaling factor in EPF model (tuning parameter),
                                 !! typically 0.1 - 10 [nondim].
   real      :: DT               !< Baroclinic timestep
-  !real      :: Khth_Slope_Cff   !< something needed just for getting slopes... keep it at default
-  integer   :: slope_method     !< Method used to calculate the interface slopes for ANN input
-                                !! 1 = use VarMix module
-                                !! 2 = use Dhruv's calc_slope() subroutine... with mods
-                                !! 3 = use Kelsey's shitty changes to VarMix model
-  real      :: kappa_smooth     !< a diffusivity for smoothing? Needed for getting slopes. default exists
-  logical   :: use_stanley_iso  !< should be defaulted to false. Needed for isoneutral slope calc?
   real      :: H_cutoff         !< cutoff depth from which isopycnal slopes are calculated, should be min ocean depth as default
+  logical   :: add_EPF_fxy       !< update the diffusivities with horizontal divergence of EPF? 
+  logical   :: add_EPF_fz       !< update the diffusivities with vertical divergence of EPF?
+
   ! allocating memory in the heap. Should allocate memory here for things needed in subsequent timesteps
   real, dimension(:,:,:), allocatable :: &
           fx, &        !< the zonal acceleration due to horiztonal divergence of EPF 
@@ -109,6 +105,7 @@ type, public :: EPF_CS ; private
   integer :: id_sh_xy_h = -1, id_vort_xy_h = -1
   integer :: id_eta = -1, id_h_eta = -1
   integer :: id_depth_mask = -1
+  !integer :: id_fx = -1, id_fy = -1, id_fxz = -1, id_fyz = -1
   !>@}
 
   !>@{ CPU time clock IDs
@@ -146,6 +143,7 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   type(diag_ctrl), target, intent(inout) :: diag       !< Diagnostics structure.
   type(EPF_CS),            intent(inout) :: CS         !< EPF control structure.
   logical,                 intent(out)   :: use_EPF_ANN !< If true, turns on EPF parameterisation.
+  
 
   real :: subroundoff_Cor     ! A negligible parameter which avoids division by zero
                               ! but small compared to Coriolis parameter [T-1 ~> s-1]
@@ -167,6 +165,14 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
                  "subgrid momentum parameterization of mesoscale eddies.", default=.false.)
   if (.not. use_EPF_ANN) return
   
+  call get_param(param_file, mdl, "ADD_FXY", CS%add_EPF_fxy, &
+                 "If true, updates diffusivities with horizontal divergence of EPF.", &
+                  default=.false.)
+
+  call get_param(param_file, mdl, "ADD_FZ", CS%add_EPF_fz, &
+                  "If true, updates diffusivities with vertical divergence of EPF.", &
+                   default=.false.)  
+
   call get_param(param_file, mdl, "EPF_SCALING", CS%amplitude, &
                  "The nondimensional tuning parameter for EPF ANN, " //&
                  "typically 0.5-2.5", units="nondim", default=0.5)
@@ -181,25 +187,10 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
                  "The (baroclinic) dynamics time step.", units="s", scale=US%s_to_T, &
                  fail_if_missing=.true.)
 
-  call get_param(param_file, mdl, "SLOPE_METHOD", CS%slope_method, &
-                 "Method for calculating interface slopes", units="nondim", default=2)
-
   call get_param(param_file, mdl, "H_CUTOFF", CS%H_cutoff, &
                  "The minimum ocean depth for use in calculation of interface slopes", units="m", &
                  scale = US%Z_to_L, default = 1.0)
 
-  call get_param(param_file, mdl, "KD_SMOOTH", CS%kappa_smooth, &
-                 "A diapycnal diffusivity that is used to interpolate "//&
-                 "more sensible values of T & S into thin layers.", &
-                 units="m2 s-1", default=1.0e-6, scale=GV%m2_s_to_HZ_T)
-
-  call get_param(param_file, mdl, "USE_STANLEY_ISO", CS%use_stanley_iso, &
-                 "If true, turn on Stanley SGS T variance parameterization "// &
-                 "in isopycnal slope code.", default=.false.)
-  !call get_param(param_file, mdl, "KHTH_SLOPE_CFF", CS%KHTH_Slope_Cff, &
-  !               "The nondimensional coefficient in the Visbeck formula for "//&
-  !               "the interface depth diffusivity", units="nondim", default=0.0)
-  ! Register fields for output from this module.
   CS%diag => diag
   !!type(axes_grp)  :: axesBL, axesTL, axesCuL, axesCvL
   ! L indicates that it is a layer variable
@@ -224,7 +215,7 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   CS%id_Tyz = register_diag_field('ocean_model', 'Tyz', diag%axesTL, Time, &
       'Meridional form stress difference in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
 
-  
+  !CS%id_fx = register_diag_field('ocean_model', 'fx', diag%axes)
 
   ! Registering fields for debugging purposes
   CS%id_slope_x = register_diag_field('ocean_model', 'slope_x', diag%axesCui, Time, &
@@ -299,12 +290,8 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   allocate(CS%h_eta(SZI_(G), SZJ_(G), SZK_(GV)))
   allocate(CS%depth_mask(SZI_(G), SZJ_(G), SZK_(GV)), source=1.)
   
-  
   allocate(CS%slope_x(G%IsdB:G%IedB,G%jsd:G%jed,GV%ke+1))
   allocate(CS%slope_y(G%isd:G%ied,G%JsdB:G%JedB,GV%ke+1))
-  !allocate(CS%slope_x(SZIB_(G), SZJ_(G), SZK_(GV)+1), source=0.)
-  !allocate(CS%slope_y(SZI_(G), SZJB_(G), SZK_(GV)+1), source=0.)
-  !allocate(CS%eta(SZI_(G), SZJ_(G), SZK_(GV)+1), source = 0.)
 
   allocate(CS%slope_x_top(SZI_(G),SZJ_(G),SZK_(GV)))
   allocate(CS%slope_x_bot(SZI_(G),SZJ_(G),SZK_(GV)))
@@ -338,12 +325,6 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
     CS%kappa_q(I,J) = -CS%amplitude * G%areaBu(I,J) * G%mask2dBu(I,J)
   enddo; enddo
 
-  !CS%HPF_halo = max(min(G%Domain%nihalo, G%Domain%njhalo), 2)
-  ! call create_group_pass(CS%pass_xx, CS%sh_xx, G%Domain, halo=CS%HPF_halo)
-  ! call create_group_pass(CS%pass_xy, CS%sh_xy, G%Domain, halo=CS%HPF_halo, &
-  !     position=CORNER)
-  ! call create_group_pass(CS%pass_xy, CS%vort_xy, G%Domain, halo=CS%HPF_halo, &
-  !     position=CORNER)
 
 end subroutine EPF_init
 
@@ -417,11 +398,7 @@ subroutine slope_calc(G, GV, CS)
   type(ocean_grid_type),                         intent(inout)  :: G   !< Ocean grid structure
   type(verticalGrid_type),                       intent(in)     :: GV  !< The ocean's vertical grid structure.
   type(EPF_CS),                                  intent(inout)  :: CS   !< EPS control structure.
-  ! real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1),   intent(in)     :: e   !< The zonal velocity [L T-1 ~> m s-1].
-  ! real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1),  intent(inout)  :: slope_x !< Isopyc. slope at u [Z L-1 ~> nondim]
-  ! real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1),  intent(inout)  :: slope_y !< Isopyc. slope at v [Z L-1 ~> nondim]
-  ! real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),     intent(inout)  :: h !< Layer thickness [H ~> m or kg m-2]
-
+  
   ! local variables 
   integer i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
 
@@ -436,9 +413,6 @@ subroutine slope_calc(G, GV, CS)
         CS%slope_x(I,j,k) = (-(CS%eta(i,j,k)-CS%eta(i+1,j,k))*G%IdxCu(I,j)) * G%OBCmaskCu(I,j) 
       enddo
 
-      ! do k = 1, nz
-      !   if (min(CS%h_eta(i,j,k),CS%h_eta(i+1,j,k)) < CS%H_cutoff) CS%slope_x(I,j,k) = 0.
-      ! enddo
     enddo
   enddo
 
@@ -448,9 +422,7 @@ subroutine slope_calc(G, GV, CS)
       do k = 1, nz+1
         CS%slope_y(i,J,k)= (-(CS%eta(i,j,k)-CS%eta(i,j+1,k))*G%IdyCv(i,J)) * G%OBCmaskCv(i,J)
       enddo
-      ! do k = 1, nz
-      !   if (min(CS%h_eta(i,j,k),CS%h_eta(j+1,j,k)) < CS%H_cutoff) CS%slope_y(i,J,k) = 0.
-      ! enddo
+
     enddo
   enddo
   
@@ -537,39 +509,10 @@ subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
   call pass_var(CS%sh_xx, G%Domain, clock=CS%id_clock_mpi)
   call pass_var(CS%vort_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
   
-  !if (VarMix%use_variable_mixing) then
-  !  use_VarMix = VarMix%use_variable_mixing .and. (CS%KHTH_Slope_Cff > 0) !default is 0, so this should turn use_VarMix off
-  !  use_stored_slopes = VarMix%use_stored_slopes
-  !end if
-
-  !if (.not. use_stored_slopes) return 
-
-  if (CS%slope_method == 1) then
-    call find_eta(h, tv, G, GV, US, e, halo_size = 1)
-    CS%eta = e
-    CS%h_eta = h
-    call calc_isoneutral_slopes(G, GV, US, h, e, tv, CS%dt*CS%kappa_smooth, CS%use_stanley_iso, &
-                                CS%slope_x, CS%slope_y)
-    !call calc_slope_functions(h, tv, CS%dt, G, GV, US, VarMix, OBC)
-    !CS%slope_x = VarMix%slope_x
-    !CS%slope_y = VarMix%slope_y
-  elseif (CS%slope_method == 2) then
-    call find_eta(h, tv, G, GV, US, e, halo_size=1) ! calculating the interface height
-    CS%eta = e
-    CS%h_eta = h
-    call slope_calc(G, GV, CS) ! calculating the interface slopes instead of relying on VarMix 
-    !x(5) = - 0.5*(slope_x(I,j,k) + slope_x(I-1,j,k)) * G%mask2dT(i,j)
-    !x(6) = - 0.5*(slope_y(i,J,k) + slope_y(i,J-1,k)) * G%mask2dT(i,j)
-    ! CS%slope_x = slope_x
-    ! CS%slope_y = slope_y
-  elseif (CS%slope_method == 3) then
-    call find_eta(h, tv, G, GV, US, e, halo_size=1) ! calculating the interface height
-    CS%eta = e
-    CS%h_eta = h
-    call calc_slope_functions(h, tv, CS%dt, G, GV, US, VarMix, OBC) !using VarMix functions... but with options I've written
-    CS%slope_x = VarMix%slope_x
-    CS%slope_y = VarMix%slope_y
-  end if
+  call find_eta(h, tv, G, GV, US, e, halo_size=1) ! calculating the interface height
+  CS%eta = e
+  CS%h_eta = h
+  call slope_calc(G, GV, CS) ! calculating the interface slopes instead of relying on VarMix 
   
   call make_mask(h, G, GV, CS) !creating the mask based off of depth
   ! Interpolate input features
@@ -581,15 +524,6 @@ subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
 
       CS%vort_xy_h(i,j,k) = 0.25 * ( (CS%vort_xy(I-1,J-1,k) + CS%vort_xy(I,J,k)) &
                          + (CS%vort_xy(I-1,J,k) + CS%vort_xy(I,J-1,k)) ) * G%mask2dT(i,j)
-      
-      !eta_x_top_h(i,j,k) = 0.5 * ( (slope_x(I-1,j,k) + slope_x(I,j,k)) ) * G%mask2dT(i,j)
-      !eta_y_top_h(i,j,k) = 0.5 * ( (slope_y(i,J-1,k) + slope_y(i,J,k)) ) * G%mask2dT(i,j)
-      !eta_x_bot_h(i,j,k) = 0.5 * ( (slope_x(I-1,j,k+1) + slope_x(I,j,k+1)) ) * G%mask2dT(i,j)
-      !eta_y_bot_h(i,j,k) = 0.5 * ( (slope_y(i,J-1,k+1) + slope_y(i,J,k+1)) ) * G%mask2dT(i,j)
-      !CS%slope_x_top(i,j,k) = 0.5 * ( (VarMix%slope_x(I-1,j,k) + VarMix%slope_x(I,j,k)) ) * G%mask2dT(i,j)
-      !eta_y_top_h(i,j,k) = 0.5 * ( (VarMix%slope_y(i,J-1,k) + VarMix%slope_y(i,J,k)) ) * G%mask2dT(i,j)
-      !eta_x_bot_h(i,j,k) = 0.5 * ( (VarMix%slope_x(I-1,j,k+1) + VarMix%slope_x(I,j,k+1)) ) * G%mask2dT(i,j)
-      !eta_y_bot_h(i,j,k) = 0.5 * ( (VarMix%slope_y(i,J-1,k+1) + VarMix%slope_y(i,J,k+1)) ) * G%mask2dT(i,j)
       
       CS%slope_x_top(i,j,k) = 0.5 * (( (CS%slope_x(I-1,j,k) + CS%slope_x(I,j,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j) 
       CS%slope_y_top(i,j,k) = 0.5 * (( (CS%slope_y(i,J-1,k) + CS%slope_y(i,J,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j)
@@ -645,8 +579,6 @@ subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
   call pass_var(CS%Txy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
   call pass_var(CS%Txx, G%Domain, clock=CS%id_clock_mpi)
   call pass_var(CS%Tyy, G%Domain, clock=CS%id_clock_mpi)
-  !call pass_var(CS%Txz, G%Domain, clock=CS%id_clock_mpi)
-  !call pass_var(CS%Tyz, G%Domain, clock=CS%id_clock_mpi)
 
   call cpu_clock_end(CS%id_clock_stress_ANN)
 
@@ -759,6 +691,15 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
       fx_z = - 0.5 * (CS%Txz(i,j,k) + CS%Txz(i+1,j,k)) / h_u
       diffu(I,j,k) = diffu(I,j,k) !+ fx + fx_z
       
+      if (CS%add_EPF_fxy) then
+        diffu(I,j,k) = diffu(I,j,k) + fx
+      endif
+
+      if (CS%add_EPF_fz) then
+        diffu(I,j,k) = diffu(I,j,k) + fx_z
+      endif
+      
+
     enddo ; enddo
 
     ! Evaluate 1/h y.Div(h S) (Line 1517 of MOM_hor_visc.F90)
@@ -771,6 +712,14 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
               G%IareaCv(i,J)) / h_v
       fy_z = - 0.5 * (CS%Tyz(i,j,k) + CS%Tyz(i,j+1,k)) / h_v
       diffv(i,J,k) = diffv(i,J,k) !+ fy + fy_z
+      
+      if (CS%add_EPF_fxy) then
+        diffv(I,j,k) = diffv(I,j,k) + fy
+      endif
+
+      if (CS%add_EPF_fz) then
+        diffv(I,j,k) = diffv(I,j,k) + fy_z
+      endif
 
     enddo ; enddo
 
@@ -837,11 +786,11 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
                                  G, GV, CS)
 
   call cpu_clock_begin(CS%id_clock_post)
-  !if (CS%id_Txx > 0) call post_data(CS%id_Txx, CS%Txx, CS%diag)
-  !if (CS%id_Tyy > 0) call post_data(CS%id_Tyy, CS%Tyy, CS%diag)
-  !if (CS%id_Txy > 0) call post_data(CS%id_Txy, CS%Txy, CS%diag)
-  !if (CS%id_Txz > 0) call post_data(CS%id_Txz, CS%Txz, CS%diag)
-  !if (CS%id_Tyz > 0) call post_data(CS%id_Tyz, CS%Tyz, CS%diag)
+  if (CS%id_Txx > 0) call post_data(CS%id_Txx, CS%Txx, CS%diag)
+  if (CS%id_Tyy > 0) call post_data(CS%id_Tyy, CS%Tyy, CS%diag)
+  if (CS%id_Txy > 0) call post_data(CS%id_Txy, CS%Txy, CS%diag)
+  if (CS%id_Txz > 0) call post_data(CS%id_Txz, CS%Txz, CS%diag)
+  if (CS%id_Tyz > 0) call post_data(CS%id_Tyz, CS%Tyz, CS%diag)
 
   if (CS%id_sh_xx > 0) call post_data(CS%id_sh_xx, CS%sh_xx, CS%diag)
   if (CS%id_sh_xy > 0) call post_data(CS%id_sh_xy, CS%sh_xy, CS%diag)
