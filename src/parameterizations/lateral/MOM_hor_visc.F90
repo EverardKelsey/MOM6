@@ -255,7 +255,7 @@ contains
 !!   h(is-1:ie+1,js-1:je+1) or up to h(is-2:ie+2,js-2:je+2) with some Leith options.
 subroutine horizontal_viscosity(u, v, h, uh, vh, diffu, diffv, MEKE, VarMix, G, GV, US, &
                                 CS, tv, dt, OBC, BT, TD, ADp, hu_cont, hv_cont)
-  type(ocean_grid_type),         intent(inout)  :: G      !< The ocean's grid structure.
+  type(ocean_grid_type),         intent(in)  :: G      !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)  :: GV     !< The ocean's vertical grid structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
                                  intent(in)  :: u      !< The zonal velocity [L T-1 ~> m s-1].

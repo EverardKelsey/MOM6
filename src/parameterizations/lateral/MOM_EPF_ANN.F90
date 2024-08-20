@@ -9,7 +9,7 @@ use MOM_file_parser,           only : get_param, log_version, param_file_type
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_domains,               only : create_group_pass, do_group_pass, group_pass_type, &
                                       start_group_pass, complete_group_pass, &
-                                      To_North, To_East, pass_var, CORNER
+                                      To_North, To_East, pass_var, CORNER, pass_vector
 use MOM_coms,                  only : reproducing_sum
 use MOM_cpu_clock,             only : cpu_clock_id, cpu_clock_begin, cpu_clock_end, &
                                       CLOCK_MODULE, CLOCK_ROUTINE
@@ -56,6 +56,7 @@ type, public :: EPF_CS ; private
 
 
   real, dimension(:,:,:), allocatable :: &
+          Txy_h, &
           Txx,     & !< Subgrid stress xx component in h [L2 T-2 ~> m2 s-2]
           Tyy,     & !< Subgrid stress yy component in h [L2 T-2 ~> m2 s-2]
           Txy,     & !< Subgrid stress xy component in q [L2 T-2 ~> m2 s-2]
@@ -63,6 +64,8 @@ type, public :: EPF_CS ; private
           Tyz      !& !< Subgrid y component of form stress in h [L2 T-2 ~> m2 s-2]
 
   real, dimension(:,:,:), allocatable :: &
+          mom_norm_h, &
+          buoy_norm_h, &
           depth_mask, &      !< the depth mask used when applying ANN at h points
           slope_x, &         !< zonal gradient of interface at u points
           slope_y, &         !< zmeridional gradient of interface at v points
@@ -76,6 +79,8 @@ type, public :: EPF_CS ; private
           h_eta              !< the thickness used as input to find_eta function
           
   real, dimension(:,:), allocatable :: &
+          Delsq_h, &
+          Coriolis, &
           kappa_h, & !< Scaling coefficient in h points [L2 ~> m2]
           kappa_q    !< Scaling coefficient in q points [L2 ~> m2]
 
@@ -96,6 +101,7 @@ type, public :: EPF_CS ; private
   integer :: id_Txx = -1
   integer :: id_Tyy = -1
   integer :: id_Txy = -1
+  integer :: id_Txy_h = -1
   integer :: id_Txz = -1
   integer :: id_Tyz = -1
   integer :: id_slope_x_top = -1, id_slope_y_top = -1
@@ -105,6 +111,9 @@ type, public :: EPF_CS ; private
   integer :: id_sh_xy_h = -1, id_vort_xy_h = -1
   integer :: id_eta = -1, id_h_eta = -1
   integer :: id_depth_mask = -1
+  integer :: id_Coriolis_h = -1
+  integer :: id_Delsq_h = -1
+  integer :: id_mom_norm_h = -1, id_buoy_norm_h = -1
   !integer :: id_fx = -1, id_fy = -1, id_fxz = -1, id_fyz = -1
   !>@}
 
@@ -209,6 +218,9 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   CS%id_Txy = register_diag_field('ocean_model', 'Txy', diag%axesBL, Time, &
       'Off-diagonal term (Txy) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
 
+  CS%id_Txy_h = register_diag_field('ocean_model', 'Txy_h', diag%axesTL, Time, &
+      'Off-diagonal term (Txy_h) in the EPF stress tensor at the grid centre', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+
   CS%id_Txz = register_diag_field('ocean_model', 'Txz', diag%axesTL, Time, &
       'Zonal form stress difference in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
 
@@ -259,6 +271,19 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
 
   CS%id_depth_mask = register_diag_field('ocean_model','depth_mask',diag%axesTL, Time, &
       'Mask based off of a cutoff depth for application to ANN input', 'nondim')
+
+  CS%id_Coriolis_h = register_diag_field('ocean_model', 'Coriolis_h', diag%axesTL, Time, &
+       'Coriolis parameter', 's-1', conversion=US%T_to_s)
+
+  CS%id_Delsq_h = register_diag_field('ocean_model', 'Delsq_h', diag%axesTL, Time, &
+       'Squared Harmonic mean of grid spacing', 'm2', conversion=US%L_to_m**2)
+
+  CS%id_mom_norm_h = register_diag_field('ocean_model', 'mom_norm_h', diag%axesTL, Time, &
+       'Norm of velocity gradients (from input features)', 's-1', conversion=US%T_to_s)
+
+  CS%id_buoy_norm_h = register_diag_field('ocean_model', 'buoy_norm_h', diag%axesTL, Time, &
+       'Norm of interface slopes (from input features)', 'nondim')
+
   ! Clock IDs
   ! Only module is measured with syncronization. While smaller
   ! parts are measured without - because these are nested clocks.
@@ -290,30 +315,41 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   allocate(CS%h_eta(SZI_(G), SZJ_(G), SZK_(GV)))
   allocate(CS%depth_mask(SZI_(G), SZJ_(G), SZK_(GV)), source=1.)
   
-  allocate(CS%slope_x(G%IsdB:G%IedB,G%jsd:G%jed,GV%ke+1))
-  allocate(CS%slope_y(G%isd:G%ied,G%JsdB:G%JedB,GV%ke+1))
+  allocate(CS%slope_x(G%IsdB:G%IedB,G%jsd:G%jed,GV%ke+1), source=0.)
+  allocate(CS%slope_y(G%isd:G%ied,G%JsdB:G%JedB,GV%ke+1), source=0.)
 
-  allocate(CS%slope_x_top(SZI_(G),SZJ_(G),SZK_(GV)))
-  allocate(CS%slope_x_bot(SZI_(G),SZJ_(G),SZK_(GV)))
-  allocate(CS%slope_y_top(SZI_(G),SZJ_(G),SZK_(GV)))
-  allocate(CS%slope_y_bot(SZI_(G),SZJ_(G),SZK_(GV)))
+  allocate(CS%slope_x_top(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%slope_x_bot(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%slope_y_top(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%slope_y_bot(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
 
   allocate(CS%Txx(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%Tyy(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%Txy(SZIB_(G),SZJB_(G),SZK_(GV)), source=0.)
+  allocate(CS%Txy_h(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%Txz(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%Tyz(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   
   allocate(CS%kappa_h(SZI_(G),SZJ_(G)))
   allocate(CS%kappa_q(SZIB_(G),SZJB_(G)))
-
+  
+  allocate(CS%Delsq_h(SZI_(G),SZJ_(G)))
   allocate(CS%Coriolis_h(SZI_(G),SZJ_(G)))
-    subroundoff_Cor = 1e-30 * US%T_to_s
-    ! Precomputing f
-    do j=js-1,je+1 ; do i=is-1,ie+1
-      CS%Coriolis_h(i,j) = (abs(0.25 * ((G%CoriolisBu(I,J) + G%CoriolisBu(I-1,J-1)) &
+
+  allocate(CS%mom_norm_h(SZI_(G),SZJ_(G),SZK_(GV)))
+  allocate(CS%buoy_norm_h(SZI_(G),SZJ_(G),SZK_(GV)))
+
+  subroundoff_Cor = 1e-30 * US%T_to_s
+  ! Precomputing f
+  do j=js-1,je+1 ; do i=is-1,ie+1
+    CS%Coriolis_h(i,j) = (abs(0.25 * ((G%CoriolisBu(I,J) + G%CoriolisBu(I-1,J-1)) &
                           + (G%CoriolisBu(I-1,J) + G%CoriolisBu(I,J-1)))) + subroundoff_Cor) 
-    enddo; enddo
+  enddo; enddo
+
+
+  do j=js-2, je+2 ; do i=is-2, ie+2
+    CS%Delsq_h(i,j) = 2 * (((G%dxT(i,j)**2) * (G%dyT(i,j)**2)) / ((G%dxT(i,j)**2) + (G%dyT(i,j)**2)))
+  enddo ;enddo
 
   ! Precomputing the scaling coefficient
   ! Mask is included to automatically satisfy B.C.
@@ -395,7 +431,7 @@ end subroutine EPF_copy_gradient_and_thickness
 
 !subroutine slope_calc(e, G, GV, slope_x, slope_y)
 subroutine slope_calc(G, GV, CS)
-  type(ocean_grid_type),                         intent(inout)  :: G   !< Ocean grid structure
+  type(ocean_grid_type),                         intent(in)  :: G   !< Ocean grid structure
   type(verticalGrid_type),                       intent(in)     :: GV  !< The ocean's vertical grid structure.
   type(EPF_CS),                                  intent(inout)  :: CS   !< EPS control structure.
   
@@ -435,10 +471,10 @@ end subroutine slope_calc
 !!  with ANN 
 
 subroutine make_mask(h, G, GV, CS)
-  type(ocean_grid_type),     intent(inout)    :: G    !< The ocean's grid structure.
+  type(ocean_grid_type),     intent(in)    :: G    !< The ocean's grid structure.
   type(verticalGrid_type),   intent(in)    :: GV   !< The ocean's vertical grid structure
   type(EPF_CS),              intent(inout) :: CS   !< EPS control structure.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: h !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
 
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   integer :: i, j, k, n
@@ -459,14 +495,14 @@ subroutine make_mask(h, G, GV, CS)
 end subroutine make_mask
 
 subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
-  type(ocean_grid_type),     intent(inout)    :: G    !< The ocean's grid structure.
+  type(ocean_grid_type),     intent(in)    :: G    !< The ocean's grid structure.
   type(verticalGrid_type),   intent(in)    :: GV   !< The ocean's vertical grid structure
   type(EPF_CS),              intent(inout) :: CS   !< EPS control structure.
   type(unit_scale_type),     intent(in)    :: US    !< A dimensional unit scaling type
   type(VarMix_CS), target,   intent(inout)    :: VarMix !< Variable mixing coefficients
   type(thermo_var_ptrs),     intent(in)    :: tv  !<thermodynamics structure
   type(ocean_OBC_type),      pointer       :: OBC !< Open boundaries control structure
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: h !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
   !real,                                      intent(in)    :: dt !< Time increment [T ~> s]
    
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
@@ -481,16 +517,13 @@ subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
         use_VarMix, &
         use_stored_slopes
   
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
-        mom_norm_h, &    ! Norm in h points for momentum inputs [T-1 ~ s-1]
-        buoy_norm_h      ! Norm in h points for interface inputs [T-1 ~ s-1]
+  ! real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
+  !       mom_norm_h, &    ! Norm in h points for momentum inputs [T-1 ~ s-1]
+  !       buoy_norm_h      ! Norm in h points for interface inputs [T-1 ~ s-1]
         
   real, dimension(SZIB_(G), SZJ_(G), SZK_(GV)+1) :: &
         slope_x, &
         slope_y
-
-  real, dimension(SZI_(G), SZJ_(G), SZK_(GV)+1) :: &
-        e                ! interface heights needed to calculate slope
         
   real, dimension(SZI_(G),SZJ_(G)) :: &
         sqr_h, & ! Sum of squares in h points
@@ -502,17 +535,18 @@ subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
   is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
 
-  mom_norm_h = 0.
-  buoy_norm_h = 0.
+  ! mom_norm_h = 0.
+  ! buoy_norm_h = 0.
 
   call pass_var(CS%sh_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
   call pass_var(CS%sh_xx, G%Domain, clock=CS%id_clock_mpi)
   call pass_var(CS%vort_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
   
-  call find_eta(h, tv, G, GV, US, e, halo_size=1) ! calculating the interface height
-  CS%eta = e
+  call find_eta(h, tv, G, GV, US, CS%eta, halo_size=1) ! calculating the interface height
+  call pass_var(CS%eta, G%Domain, clock=CS%id_clock_mpi)
   CS%h_eta = h
-  call slope_calc(G, GV, CS) ! calculating the interface slopes instead of relying on VarMix 
+  call slope_calc(G, GV, CS) ! calculating the interface slopes instead of relying on VarMix
+  call pass_vector(CS%slope_x, CS%slope_y, G%Domain, clock=CS%id_clock_mpi)
   
   call make_mask(h, G, GV, CS) !creating the mask based off of depth
   ! Interpolate input features
@@ -531,11 +565,11 @@ subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
       CS%slope_y_bot(i,j,k) = 0.5 * ( (CS%slope_y(i,J-1,k+1) + CS%slope_y(i,J,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
 
 
-      sqr_eta_h(i,j) = CS%slope_x_top(i,j,k)**2 + CS%slope_y_top(i,j,k)**2 + CS%slope_x_bot(i,j,k)**2 + CS%slope_y_bot(i,j,k)**2
-      sqr_h(i,j) = CS%sh_xx(i,j,k)**2 + CS%sh_xy_h(i,j,k)**2 + CS%vort_xy_h(i,j,k)**2
+      sqr_eta_h(i,j) = (CS%slope_x_top(i,j,k)**2) + (CS%slope_y_top(i,j,k)**2) + (CS%slope_x_bot(i,j,k)**2) + (CS%slope_y_bot(i,j,k)**2)
+      sqr_h(i,j) = (CS%sh_xx(i,j,k)**2) + (CS%sh_xy_h(i,j,k)**2) + (CS%vort_xy_h(i,j,k)**2)
       
-      mom_norm_h(i,j,k) = sqrt(sqr_h(i,j))
-      buoy_norm_h(i,j,k) = sqrt(sqr_eta_h(i,j))
+      CS%mom_norm_h(i,j,k) = sqrt(sqr_h(i,j))
+      CS%buoy_norm_h(i,j,k) = sqrt(sqr_eta_h(i,j))
       
     enddo; enddo
   enddo
@@ -551,22 +585,23 @@ subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
       x(6) = CS%slope_x_bot(i,j,k)
       x(7) = CS%slope_y_bot(i,j,k)
 
-      input_norm_mom = mom_norm_h(i,j,k)
-      input_norm_buoy = buoy_norm_h(i,j,k)
+      input_norm_mom = CS%mom_norm_h(i,j,k)
+      input_norm_buoy = CS%buoy_norm_h(i,j,k)
 
       x(1:3) = x(1:3) / (input_norm_mom + CS%subroundoff_shear) !normalising momentum inputs
       x(4:7) = x(4:7) / (input_norm_buoy + CS%subroundoff_shear) !normalising buoyancy inputs
 
       call ANN_apply(x, y, CS%ann_instance)
 
-      y(1:3) = y(1:3) * CS%kappa_h(i,j) * input_norm_mom * input_norm_mom
-      y(4:5) = y(4:5) * CS%kappa_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
+      y(1:3) = y(1:3) * CS%Delsq_h(i,j) * input_norm_mom * input_norm_mom
+      y(4:5) = y(4:5) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
 
       CS%Txx(i,j,k) = y(1)
       Txy(i,j)      = y(2)
       CS%Tyy(i,j,k) = y(3)
       CS%Txz(i,j,k) = y(4)
       CS%Tyz(i,j,k) = y(5)
+      CS%Txy_h(i,j,k) = y(2)
     enddo ; enddo
 
     do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
@@ -689,14 +724,14 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
                             dx2q(I,J)  *Mxy(I,J)))  * &
               G%IareaCu(I,j)) / h_u
       fx_z = - 0.5 * (CS%Txz(i,j,k) + CS%Txz(i+1,j,k)) / h_u
-      diffu(I,j,k) = diffu(I,j,k) !+ fx + fx_z
+      !diffu(I,j,k) = diffu(I,j,k) !+ fx + fx_z
       
       if (CS%add_EPF_fxy) then
-        diffu(I,j,k) = diffu(I,j,k) + fx
+        diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fx)
       endif
 
       if (CS%add_EPF_fz) then
-        diffu(I,j,k) = diffu(I,j,k) + fx_z
+        diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fx_z)
       endif
       
 
@@ -711,14 +746,14 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
                             Myy(i,j+1)))            * &
               G%IareaCv(i,J)) / h_v
       fy_z = - 0.5 * (CS%Tyz(i,j,k) + CS%Tyz(i,j+1,k)) / h_v
-      diffv(i,J,k) = diffv(i,J,k) !+ fy + fy_z
+      !diffv(i,J,k) = diffv(i,J,k) !+ fy + fy_z
       
       if (CS%add_EPF_fxy) then
-        diffv(I,j,k) = diffv(I,j,k) + fy
+        diffv(I,j,k) = diffv(I,j,k) + (CS%amplitude * fy)
       endif
 
       if (CS%add_EPF_fz) then
-        diffv(I,j,k) = diffv(I,j,k) + fy_z
+        diffv(I,j,k) = diffv(I,j,k) + (CS%amplitude * fy_z)
       endif
 
     enddo ; enddo
@@ -738,7 +773,7 @@ end subroutine compute_stress_divergence
 !! diffv = diffv + ZB2020v
 subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
                              dx2h, dy2h, dx2q, dy2q, VarMix, US, OBC)
-  type(ocean_grid_type),         intent(inout)    :: G  !< The ocean's grid structure.
+  type(ocean_grid_type),         intent(in)    :: G  !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)    :: GV !< The ocean's vertical grid structure.
   type(EPF_CS),                  intent(inout) :: CS !< EPF control structure.
   type(VarMix_CS),               intent(inout)    :: VarMix !< Variable mixing coefficients
@@ -751,7 +786,7 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
                                  intent(in)    :: v  !< The meridional velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  &
-                                 intent(inout)    :: h  !< Layer thicknesses [H ~> m or kg m-2].
+                                 intent(in)    :: h  !< Layer thicknesses [H ~> m or kg m-2].
 
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
                         intent(inout) :: diffu   !< Zonal acceleration due to eddy viscosity.
@@ -791,6 +826,7 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   if (CS%id_Txy > 0) call post_data(CS%id_Txy, CS%Txy, CS%diag)
   if (CS%id_Txz > 0) call post_data(CS%id_Txz, CS%Txz, CS%diag)
   if (CS%id_Tyz > 0) call post_data(CS%id_Tyz, CS%Tyz, CS%diag)
+  if (CS%id_Txy_h > 0) call post_data(CS%id_Txy_h, CS%Txy_h, CS%diag)
 
   if (CS%id_sh_xx > 0) call post_data(CS%id_sh_xx, CS%sh_xx, CS%diag)
   if (CS%id_sh_xy > 0) call post_data(CS%id_sh_xy, CS%sh_xy, CS%diag)
@@ -808,6 +844,10 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   if (CS%id_slope_y_top > 0) call post_data(CS%id_slope_y_top, CS%slope_y_top, CS%diag)
   if (CS%id_slope_x_bot > 0) call post_data(CS%id_slope_x_bot, CS%slope_x_bot, CS%diag)
   if (CS%id_slope_y_bot > 0) call post_data(CS%id_slope_y_bot, CS%slope_y_bot, CS%diag)
+  if (CS%id_Coriolis_h > 0) call post_data(CS%id_Coriolis_h, CS%Coriolis_h, CS%diag)
+  if (CS%id_Delsq_h > 0) call post_data(CS%id_Delsq_h, CS%Delsq_h, CS%diag)
+  if (CS%id_mom_norm_h > 0) call post_data(CS%id_mom_norm_h, CS%mom_norm_h, CS%diag)
+  if (CS%id_buoy_norm_h > 0) call post_data(CS%id_buoy_norm_h, CS%buoy_norm_h, CS%diag)
 
   call cpu_clock_end(CS%id_clock_post)
 
@@ -828,6 +868,7 @@ subroutine EPF_end(CS)
   deallocate(CS%Txx)
   deallocate(CS%Tyy)
   deallocate(CS%Txy)
+  deallocate(CS%Txy_h)
   deallocate(CS%Txz)
   deallocate(CS%Tyz)
   deallocate(CS%eta)
@@ -845,6 +886,10 @@ subroutine EPF_end(CS)
   deallocate(CS%slope_y_top)
   deallocate(CS%slope_x_bot)
   deallocate(CS%slope_y_bot)
+
+  deallocate(CS%Delsq_h)
+  deallocate(CS%mom_norm_h)
+  deallocate(CS%buoy_norm_h)
   
 end subroutine EPF_end
 
