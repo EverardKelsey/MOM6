@@ -40,6 +40,8 @@ type, public :: EPF_CS ; private
 
   ! allocating memory in the heap. Should allocate memory here for things needed in subsequent timesteps
   real, dimension(:,:,:), allocatable :: &
+          f_u, &       !< the zonal diffusivity that is updated by EPF divergence
+          f_v, &       !< the meridional diffusivity that is updated by EPF divergence
           fx, &        !< the zonal acceleration due to horiztonal divergence of EPF 
           fy, &        !< the meridional acceleration due to horizontal divergence of EPF
           fx_z, &      !< the zonal acceleration due to vertical "divergence" of EPF
@@ -114,7 +116,8 @@ type, public :: EPF_CS ; private
   integer :: id_Coriolis_h = -1
   integer :: id_Delsq_h = -1
   integer :: id_mom_norm_h = -1, id_buoy_norm_h = -1
-  !integer :: id_fx = -1, id_fy = -1, id_fxz = -1, id_fyz = -1
+  integer :: id_fx = -1, id_fy = -1, id_fxz = -1, id_fyz = -1
+  integer :: id_f_u = -1, id_f_v = -1
   !>@}
 
   !>@{ CPU time clock IDs
@@ -283,6 +286,24 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
 
   CS%id_buoy_norm_h = register_diag_field('ocean_model', 'buoy_norm_h', diag%axesTL, Time, &
        'Norm of interface slopes (from input features)', 'nondim')
+  
+  CS%id_f_u = register_diag_field('ocean_model','f_u', diag%axesCuL, Time, &
+       'saved diffu variable that is updated by divergence of EPF flux', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_f_v = register_diag_field('ocean_model','f_v', diag%axesCvL, Time, &
+       'saved diffv variable that is updated by divergence of EPF flux', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_fx = register_diag_field('ocean_model','fx', diag%axesCuL, Time, &
+       'horizontal divergence of zonal EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_fxz = register_diag_field('ocean_model','fx_z', diag%axesCuL, Time, &
+       'vertical divergence of zonal EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_fy = register_diag_field('ocean_model','fy', diag%axesCvL, Time, &
+       'horizontal divergence of meridional EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_fyz = register_diag_field('ocean_model','fy_z', diag%axesCuL, Time, &
+       'vertical divergence of meridional EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
 
   ! Clock IDs
   ! Only module is measured with syncronization. While smaller
@@ -338,6 +359,14 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
 
   allocate(CS%mom_norm_h(SZI_(G),SZJ_(G),SZK_(GV)))
   allocate(CS%buoy_norm_h(SZI_(G),SZJ_(G),SZK_(GV)))
+
+  allocate(CS%f_u(SZIB_(G),SZJ_(G),SZK_(GV)))
+  allocate(CS%fx(SZIB_(G),SZJ_(G),SZK_(GV)))
+  allocate(CS%fx_z(SZIB_(G),SZJ_(G),SZK_(GV)))
+
+  allocate(CS%f_v(SZI_(G),SZJB_(G),SZK_(GV)))
+  allocate(CS%fy(SZI_(G),SZJB_(G),SZK_(GV)))
+  allocate(CS%fy_z(SZI_(G),SZJB_(G),SZK_(GV)))
 
   subroundoff_Cor = 1e-30 * US%T_to_s
   ! Precomputing f
@@ -734,6 +763,7 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
         diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fx_z)
       endif
       
+      
 
     enddo ; enddo
 
@@ -755,7 +785,7 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
       if (CS%add_EPF_fz) then
         diffv(I,j,k) = diffv(I,j,k) + (CS%amplitude * fy_z)
       endif
-
+      
     enddo ; enddo
 
   enddo ! end of k loop  
@@ -849,6 +879,14 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   if (CS%id_mom_norm_h > 0) call post_data(CS%id_mom_norm_h, CS%mom_norm_h, CS%diag)
   if (CS%id_buoy_norm_h > 0) call post_data(CS%id_buoy_norm_h, CS%buoy_norm_h, CS%diag)
 
+  if (CS%id_f_u > 0) call post_data(CS%id_f_u, CS%f_u, CS%diag)
+  if (CS%id_fx > 0) call post_data(CS%id_fx, CS%fx, CS%diag)
+  if (CS%id_fxz > 0) call post_data(CS%id_fxz, CS%fx_z, CS%diag)
+
+  if (CS%id_f_v > 0) call post_data(CS%id_f_v, CS%f_v, CS%diag)
+  if (CS%id_fy > 0) call post_data(CS%id_fy, CS%fxy, CS%diag)
+  if (CS%id_fyz > 0) call post_data(CS%id_fyz, CS%fy_z, CS%diag)
+
   call cpu_clock_end(CS%id_clock_post)
 
   call cpu_clock_end(CS%id_clock_module)
@@ -890,6 +928,14 @@ subroutine EPF_end(CS)
   deallocate(CS%Delsq_h)
   deallocate(CS%mom_norm_h)
   deallocate(CS%buoy_norm_h)
+
+  deallocate(CS%f_u)
+  deallocate(CS%fx)
+  deallocate(CS%fx_z)
+
+  deallocate(CS%f_v)
+  deallocate(CS%fy)
+  deallocate(CS%fy_z)
   
 end subroutine EPF_end
 
