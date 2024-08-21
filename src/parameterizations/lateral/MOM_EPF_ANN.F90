@@ -302,7 +302,7 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   CS%id_fy = register_diag_field('ocean_model','fy', diag%axesCvL, Time, &
        'horizontal divergence of meridional EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
 
-  CS%id_fyz = register_diag_field('ocean_model','fy_z', diag%axesCuL, Time, &
+  CS%id_fyz = register_diag_field('ocean_model','fy_z', diag%axesCvL, Time, &
        'vertical divergence of meridional EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
 
   ! Clock IDs
@@ -360,13 +360,13 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   allocate(CS%mom_norm_h(SZI_(G),SZJ_(G),SZK_(GV)))
   allocate(CS%buoy_norm_h(SZI_(G),SZJ_(G),SZK_(GV)))
 
-  allocate(CS%f_u(SZIB_(G),SZJ_(G),SZK_(GV)))
-  allocate(CS%fx(SZIB_(G),SZJ_(G),SZK_(GV)))
-  allocate(CS%fx_z(SZIB_(G),SZJ_(G),SZK_(GV)))
+  allocate(CS%f_u(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%fx(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%fx_z(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
 
   allocate(CS%f_v(SZI_(G),SZJB_(G),SZK_(GV)))
   allocate(CS%fy(SZI_(G),SZJB_(G),SZK_(GV)))
-  allocate(CS%fy_z(SZI_(G),SZJB_(G),SZK_(GV)))
+  allocate(CS%fy_z(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
 
   subroundoff_Cor = 1e-30 * US%T_to_s
   ! Precomputing f
@@ -659,7 +659,7 @@ end subroutine compute_stress_ANN_collocated
 subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy2q, G, GV, CS)
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure.
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
-  type(EPF_CS),         intent(in) :: CS   !< EPF param control structure.
+  type(EPF_CS),         intent(inout) :: CS   !< EPF param control structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
         intent(in)    :: u  !< The zonal velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
@@ -754,7 +754,9 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
               G%IareaCu(I,j)) / h_u
       fx_z = - 0.5 * (CS%Txz(i,j,k) + CS%Txz(i+1,j,k)) / h_u
       !diffu(I,j,k) = diffu(I,j,k) !+ fx + fx_z
-      
+      CS%f_u(I,j,k)  = diffu(I,j,k)
+      CS%fx(I,j,k) = fx
+      CS%fx_z(I,j,k) = fx_z
       if (CS%add_EPF_fxy) then
         diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fx)
       endif
@@ -777,13 +779,16 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
               G%IareaCv(i,J)) / h_v
       fy_z = - 0.5 * (CS%Tyz(i,j,k) + CS%Tyz(i,j+1,k)) / h_v
       !diffv(i,J,k) = diffv(i,J,k) !+ fy + fy_z
-      
+      CS%f_v(i,J,k) = diffv(I,j,k)
+      CS%fy(i,J,k) = fy
+      CS%fy_z(i,J,k) = fy_z
+
       if (CS%add_EPF_fxy) then
-        diffv(I,j,k) = diffv(I,j,k) + (CS%amplitude * fy)
+        diffv(i,J,k) = diffv(i,J,k) + (CS%amplitude * fy)
       endif
 
       if (CS%add_EPF_fz) then
-        diffv(I,j,k) = diffv(I,j,k) + (CS%amplitude * fy_z)
+        diffv(i,J,k) = diffv(i,J,k) + (CS%amplitude * fy_z)
       endif
       
     enddo ; enddo
@@ -884,7 +889,7 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   if (CS%id_fxz > 0) call post_data(CS%id_fxz, CS%fx_z, CS%diag)
 
   if (CS%id_f_v > 0) call post_data(CS%id_f_v, CS%f_v, CS%diag)
-  if (CS%id_fy > 0) call post_data(CS%id_fy, CS%fxy, CS%diag)
+  if (CS%id_fy > 0) call post_data(CS%id_fy, CS%fy, CS%diag)
   if (CS%id_fyz > 0) call post_data(CS%id_fyz, CS%fy_z, CS%diag)
 
   call cpu_clock_end(CS%id_clock_post)
