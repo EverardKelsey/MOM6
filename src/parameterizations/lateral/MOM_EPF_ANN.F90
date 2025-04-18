@@ -35,17 +35,28 @@ type, public :: EPF_CS ; private
                                 !! typically 0.1 - 10 [nondim].
   real      :: DT               !< Baroclinic timestep
   real      :: H_cutoff         !< cutoff depth from which isopycnal slopes are calculated, should be min ocean depth as default
+  real      :: GFS              !< Reduced gravity at free surface
+  real      :: GINT             !< reduced gravity at layer interface
+  real      :: fz_sign   !< sign of the vertical flux contribution (for keeping track and easy changes)
+  logical   :: add_EPF_fxx       !< update the diffusivities with horizontal divergence of EPF? 
   logical   :: add_EPF_fxy       !< update the diffusivities with horizontal divergence of EPF? 
+  logical   :: add_EPF_fyx       !< update the diffusivities with horizontal divergence of EPF? 
+  logical   :: add_EPF_fyy       !< update the diffusivities with horizontal divergence of EPF? 
   logical   :: add_EPF_fz       !< update the diffusivities with vertical divergence of EPF?
+  logical   :: add_EPF_subPE    !< update the diffusivities with horizontal divergence of subfilter PE?
 
   ! allocating memory in the heap. Should allocate memory here for things needed in subsequent timesteps
   real, dimension(:,:,:), allocatable :: &
           f_u, &       !< the zonal diffusivity that is updated by EPF divergence
           f_v, &       !< the meridional diffusivity that is updated by EPF divergence
-          fx, &        !< the zonal acceleration due to horiztonal divergence of EPF 
-          fy, &        !< the meridional acceleration due to horizontal divergence of EPF
-          fx_z, &      !< the zonal acceleration due to vertical "divergence" of EPF
-          fy_z         !< the meridional acceleration due to vertical "divergence" of EPF
+          fxx, &        !< the zonal acceleration due to horiztonal divergence of EPF 
+          fxy, &        !< the zonal acceleration due to horiztonal divergence of EPF 
+          fyx, &        !< the meridional acceleration due to horizontal divergence of EPF
+          fyy, &        !< the zonal acceleration due to horiztonal divergence of EPF 
+          fx_PE, &        !< the zonal acceleration due to horiztonal divergence of EPF 
+          fy_PE, &        !< the meridional acceleration due to horizontal divergence of EPF
+          fxz, &      !< the zonal acceleration due to vertical "divergence" of EPF
+          fyz         !< the meridional acceleration due to vertical "divergence" of EPF
 
   real, dimension(:,:,:), allocatable :: &
           sh_xx,   &   !< Horizontal tension (du/dx - dv/dy) in h (CENTER)
@@ -61,6 +72,8 @@ type, public :: EPF_CS ; private
           Txy_h, &
           Txx,     & !< Subgrid stress xx component in h [L2 T-2 ~> m2 s-2]
           Tyy,     & !< Subgrid stress yy component in h [L2 T-2 ~> m2 s-2]
+          Txx_PE,     & !< Subgrid stress xx component in h [L2 T-2 ~> m2 s-2]
+          Tyy_PE,     & !< Subgrid stress yy component in h [L2 T-2 ~> m2 s-2]
           Txy,     & !< Subgrid stress xy component in q [L2 T-2 ~> m2 s-2]
           Txz,     & !< Subgrid x component of form stress in h [L2 T-2 ~> m2 s-2]
           Tyz      !& !< Subgrid y component of form stress in h [L2 T-2 ~> m2 s-2]
@@ -90,11 +103,12 @@ type, public :: EPF_CS ; private
         Coriolis_h(:,:)     !< Coriolis parameter at h points [T ~> s]
 
   !integer :: use_ann  !< 0: ANN is turned off, 1: default ANN for EPF
+  integer :: ann_type  !< 0: ANN is layer agnostic, 1: ANN is a column-type model
   integer :: n_inputs !< Number of inputs to the ANN, default is 7
   integer :: n_outputs !< Number of outputs from the ANN, default is 5
   
   type(ANN_CS) :: ann_instance !< ANN instance
-  character(len=200) :: ann_file = "/scratch/kae10022/PythonScripts/ANN_test.nc" !< Default ANN with EPF model
+  character(len=200) :: ann_file = "/scratch/kae10022/dev_notebooks/ANNcolumn_test.nc" !< Default test ANN with EPF model for column model
 
   real :: subroundoff_shear
 
@@ -102,6 +116,8 @@ type, public :: EPF_CS ; private
   !>@{ Diagnostic handles
   integer :: id_Txx = -1
   integer :: id_Tyy = -1
+  integer :: id_Txx_PE = -1
+  integer :: id_Tyy_PE = -1
   integer :: id_Txy = -1
   integer :: id_Txy_h = -1
   integer :: id_Txz = -1
@@ -116,8 +132,10 @@ type, public :: EPF_CS ; private
   integer :: id_Coriolis_h = -1
   integer :: id_Delsq_h = -1
   integer :: id_mom_norm_h = -1, id_buoy_norm_h = -1
-  integer :: id_fx = -1, id_fy = -1, id_fxz = -1, id_fyz = -1
+  integer :: id_fxx = -1, id_fxy = -1, id_fyx = -1, id_fyy = -1
+  integer :: id_fxz = -1, id_fyz = -1
   integer :: id_f_u = -1, id_f_v = -1
+  integer :: id_fx_PE = -1, id_fy_PE = -1
   !>@}
 
   !>@{ CPU time clock IDs
@@ -176,14 +194,34 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
                  "If true, turns on EPF " //&
                  "subgrid momentum parameterization of mesoscale eddies.", default=.false.)
   if (.not. use_EPF_ANN) return
-  
+
+  call get_param(param_file, mdl, "EPF_ANN_TYPE", CS%ann_type, &
+                 "If 0, use layer agnostic ANN. If 1, use column-model type ANN" //&
+                 "subgrid momentum parameterization of mesoscale eddies.", fail_if_missing=.true.)
+
+  call get_param(param_file, mdl, "ADD_FXX", CS%add_EPF_fxx, &
+                 "If true, updates diffusivities with horizontal divergence of EPF.", &
+                  default=.false.)
+
   call get_param(param_file, mdl, "ADD_FXY", CS%add_EPF_fxy, &
+                 "If true, updates diffusivities with horizontal divergence of EPF.", &
+                  default=.false.)
+
+  call get_param(param_file, mdl, "ADD_FYX", CS%add_EPF_fyx, &
+                 "If true, updates diffusivities with horizontal divergence of EPF.", &
+                  default=.false.)
+
+  call get_param(param_file, mdl, "ADD_FYY", CS%add_EPF_fyy, &
                  "If true, updates diffusivities with horizontal divergence of EPF.", &
                   default=.false.)
 
   call get_param(param_file, mdl, "ADD_FZ", CS%add_EPF_fz, &
                   "If true, updates diffusivities with vertical divergence of EPF.", &
                    default=.false.)  
+  
+  call get_param(param_file, mdl, "ADD_subPE", CS%add_EPF_subPE, &
+                  "If true, add the subfilter PE term to the Txx and Tyy terms", &
+                  default = .false.)
 
   call get_param(param_file, mdl, "EPF_SCALING", CS%amplitude, &
                  "The nondimensional tuning parameter for EPF ANN, " //&
@@ -199,6 +237,18 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
                  "The (baroclinic) dynamics time step.", units="s", scale=US%s_to_T, &
                  fail_if_missing=.true.)
 
+  call get_param(param_file, mdl, "GFS", CS%GFS, &
+                 "Reduced gravity at free surface", units="m s-2", scale=US%L_T2_to_m_s2, &
+                 fail_if_missing=.true.)
+                 
+  call get_param(param_file, mdl, "GINT", CS%GINT, &
+                 "Reduced gravity at interface between layers", units="m s-2", scale=US%L_T2_to_m_s2, &
+                 fail_if_missing=.true.)
+
+  call get_param(param_file, mdl, "FZ_SIGN", CS%fz_sign, &
+                 "Sign of the divergence of vertical fluxes", units="nondim", &
+                 default=1.0)
+
   call get_param(param_file, mdl, "H_CUTOFF", CS%H_cutoff, &
                  "The minimum ocean depth for use in calculation of interface slopes", units="m", &
                  scale = US%Z_to_L, default = 1.0)
@@ -213,10 +263,16 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   ! Cv indicates centered at v points
   !!type(axes_grp)  :: axesBi, axesTi, axesCui, axesCvi
   CS%id_Txx = register_diag_field('ocean_model', 'Txx', diag%axesTL, Time, &
-      'Diagonal term (Txx) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+      'Diagonal term (Txx) in the EPF stress tensor (Reynolds stress component)', 'm2 s-2', conversion=US%L_T_to_m_s**2)
 
   CS%id_Tyy = register_diag_field('ocean_model', 'Tyy', diag%axesTL, Time, &
-      'Diagonal term (Tyy) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+      'Diagonal term (Tyy) in the EPF stress tensor (Reynolds stress component)', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+
+  CS%id_Txx_PE = register_diag_field('ocean_model', 'Txx_PE', diag%axesTL, Time, &
+      'Diagonal term (Txx_PE) in the EPF stress tensor corresponding to subfilter potential energy', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+
+  CS%id_Tyy_PE = register_diag_field('ocean_model', 'Tyy_PE', diag%axesTL, Time, &
+      'Diagonal term (Tyy_PE) in the EPF stress tensor corresponding to subfilter potential energy', 'm2 s-2', conversion=US%L_T_to_m_s**2)
 
   CS%id_Txy = register_diag_field('ocean_model', 'Txy', diag%axesBL, Time, &
       'Off-diagonal term (Txy) in the EPF stress tensor', 'm2 s-2', conversion=US%L_T_to_m_s**2)
@@ -293,16 +349,32 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   CS%id_f_v = register_diag_field('ocean_model','f_v', diag%axesCvL, Time, &
        'saved diffv variable that is updated by divergence of EPF flux', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
 
-  CS%id_fx = register_diag_field('ocean_model','fx', diag%axesCuL, Time, &
-       'horizontal divergence of zonal EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+  CS%id_fxx = register_diag_field('ocean_model','fxx', diag%axesCuL, Time, &
+       'horizontal divergence of zonal rotational component of Reynolds stress', &
+       'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
 
-  CS%id_fxz = register_diag_field('ocean_model','fx_z', diag%axesCuL, Time, &
+  CS%id_fxy = register_diag_field('ocean_model','fxy', diag%axesCuL, Time, &
+       'horizontal divergence of zonal irrotational component of Reynolds stress', &
+       'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_fx_PE = register_diag_field('ocean_model','fx_PE', diag%axesCuL, Time, &
+       'horizontal divergence of zonal EPF due to subfilter potential energy', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_fxz = register_diag_field('ocean_model','fxz', diag%axesCuL, Time, &
        'vertical divergence of zonal EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
 
-  CS%id_fy = register_diag_field('ocean_model','fy', diag%axesCvL, Time, &
-       'horizontal divergence of meridional EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+  CS%id_fyx = register_diag_field('ocean_model','fyx', diag%axesCvL, Time, &
+       'horizontal divergence of meridional irrotational component of Reynolds stress', &
+       'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
 
-  CS%id_fyz = register_diag_field('ocean_model','fy_z', diag%axesCvL, Time, &
+  CS%id_fyy = register_diag_field('ocean_model','fyy', diag%axesCvL, Time, &
+       'horizontal divergence of meridional rotational component of Reynolds stress', &
+       'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_fy_PE = register_diag_field('ocean_model','fy_PE', diag%axesCvL, Time, &
+       'horizontal divergence of meridional EPF due to subfilter potential energy', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
+
+  CS%id_fyz = register_diag_field('ocean_model','fyz', diag%axesCvL, Time, &
        'vertical divergence of meridional EPF', 'm s-2', conversion=(US%L_T_to_m_s**2)/US%L_to_m)
 
   ! Clock IDs
@@ -346,6 +418,8 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
 
   allocate(CS%Txx(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%Tyy(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%Txx_PE(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%Tyy_PE(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%Txy(SZIB_(G),SZJB_(G),SZK_(GV)), source=0.)
   allocate(CS%Txy_h(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%Txz(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
@@ -361,12 +435,16 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   allocate(CS%buoy_norm_h(SZI_(G),SZJ_(G),SZK_(GV)))
 
   allocate(CS%f_u(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
-  allocate(CS%fx(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
-  allocate(CS%fx_z(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%fxx(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%fxy(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%fx_PE(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%fxz(SZIB_(G),SZJ_(G),SZK_(GV)), source=0.)
 
-  allocate(CS%f_v(SZI_(G),SZJB_(G),SZK_(GV)))
-  allocate(CS%fy(SZI_(G),SZJB_(G),SZK_(GV)))
-  allocate(CS%fy_z(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
+  allocate(CS%f_v(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
+  allocate(CS%fyx(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
+  allocate(CS%fyy(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
+  allocate(CS%fy_PE(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
+  allocate(CS%fyz(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
 
   subroundoff_Cor = 1e-30 * US%T_to_s
   ! Precomputing f
@@ -648,6 +726,147 @@ subroutine compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
 
 end subroutine compute_stress_ANN_collocated
 
+subroutine compute_stress_ANN_collocated_column(h, tv, G, GV, CS, US, VarMix, OBC)
+  type(ocean_grid_type),     intent(in)    :: G    !< The ocean's grid structure.
+  type(verticalGrid_type),   intent(in)    :: GV   !< The ocean's vertical grid structure
+  type(EPF_CS),              intent(inout) :: CS   !< EPS control structure.
+  type(unit_scale_type),     intent(in)    :: US    !< A dimensional unit scaling type
+  type(VarMix_CS), target,   intent(inout)    :: VarMix !< Variable mixing coefficients
+  type(thermo_var_ptrs),     intent(in)    :: tv  !<thermodynamics structure
+  type(ocean_OBC_type),      pointer       :: OBC !< Open boundaries control structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
+  !real,                                      intent(in)    :: dt !< Time increment [T ~> s]
+   
+  integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
+  integer :: i, j, k, n
+
+  real :: x(CS%n_inputs), y(CS%n_outputs)
+  real :: input_norm
+  real :: input_norm_mom
+  real :: input_norm_buoy
+
+  logical :: &
+        use_VarMix, &
+        use_stored_slopes
+  
+  ! real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
+  !       mom_norm_h, &    ! Norm in h points for momentum inputs [T-1 ~ s-1]
+  !       buoy_norm_h      ! Norm in h points for interface inputs [T-1 ~ s-1]
+        
+  real, dimension(SZIB_(G), SZJ_(G), SZK_(GV)+1) :: &
+        slope_x, &
+        slope_y
+        
+  real, dimension(SZI_(G),SZJ_(G)) :: &
+        sqr_h, & ! Sum of squares in h points
+        sqr_eta_h
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
+        Txy      ! Predicted Txy in center points to be interpolated to corners
+
+  call cpu_clock_begin(CS%id_clock_stress_ANN)
+
+  is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
+  Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
+
+  ! mom_norm_h = 0.
+  ! buoy_norm_h = 0.
+
+  call pass_var(CS%sh_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
+  call pass_var(CS%sh_xx, G%Domain, clock=CS%id_clock_mpi)
+  call pass_var(CS%vort_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
+  
+  call find_eta(h, tv, G, GV, US, CS%eta, halo_size=1) ! calculating the interface height
+  call pass_var(CS%eta, G%Domain, clock=CS%id_clock_mpi)
+  CS%h_eta = h
+  call slope_calc(G, GV, CS) ! calculating the interface slopes instead of relying on VarMix
+  call pass_vector(CS%slope_x, CS%slope_y, G%Domain, clock=CS%id_clock_mpi)
+  
+  call make_mask(h, G, GV, CS) !creating the mask based off of depth
+  ! Interpolate input features
+  do k=1,nz
+    do j=js-2,je+2 ; do i=is-2,ie+2
+      ! It is assumed that B.C. is applied to sh_xy and vort_xy
+      CS%sh_xy_h(i,j,k) = 0.25 * ( (CS%sh_xy(I-1,J-1,k) + CS%sh_xy(I,J,k)) &
+                       + (CS%sh_xy(I-1,J,k) + CS%sh_xy(I,J-1,k)) ) * G%mask2dT(i,j)
+
+      CS%vort_xy_h(i,j,k) = 0.25 * ( (CS%vort_xy(I-1,J-1,k) + CS%vort_xy(I,J,k)) &
+                         + (CS%vort_xy(I-1,J,k) + CS%vort_xy(I,J-1,k)) ) * G%mask2dT(i,j)
+      
+      CS%slope_x_top(i,j,k) = 0.5 * (( (CS%slope_x(I-1,j,k) + CS%slope_x(I,j,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j) 
+      CS%slope_y_top(i,j,k) = 0.5 * (( (CS%slope_y(i,J-1,k) + CS%slope_y(i,J,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j)
+      CS%slope_x_bot(i,j,k) = 0.5 * ( (CS%slope_x(I-1,j,k+1) + CS%slope_x(I,j,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+      CS%slope_y_bot(i,j,k) = 0.5 * ( (CS%slope_y(i,J-1,k+1) + CS%slope_y(i,J,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+
+
+      sqr_eta_h(i,j) = (CS%slope_x_top(i,j,k)**2) + (CS%slope_y_top(i,j,k)**2) 
+      sqr_h(i,j) = (CS%sh_xx(i,j,k)**2) + (CS%sh_xy_h(i,j,k)**2) + (CS%vort_xy_h(i,j,k)**2)
+      
+      CS%mom_norm_h(i,j,k) = sqrt(sqr_h(i,j))
+      CS%buoy_norm_h(i,j,k) = sqrt(sqr_eta_h(i,j))
+      
+    enddo; enddo
+  enddo
+
+
+  do j=js-2,je+2 ; do i=is-2,ie+2
+    x(1) = CS%vort_xy_h(i,j,1) / (CS%mom_norm_h(i,j,1) + CS%subroundoff_shear)
+    x(2) = CS%sh_xx(i,j,1) / (CS%mom_norm_h(i,j,1) + CS%subroundoff_shear)
+    x(3) = CS%sh_xy_h(i,j,1) / (CS%mom_norm_h(i,j,1) + CS%subroundoff_shear)
+    x(4) = CS%vort_xy_h(i,j,2) / (CS%mom_norm_h(i,j,2) + CS%subroundoff_shear)
+    x(5) = CS%sh_xx(i,j,2) / (CS%mom_norm_h(i,j,2) + CS%subroundoff_shear)
+    x(6) = CS%sh_xy_h(i,j,2) / (CS%mom_norm_h(i,j,2) + CS%subroundoff_shear)
+
+    x(7) = CS%slope_x_top(i,j,1) / (CS%buoy_norm_h(i,j,1) + CS%subroundoff_shear)
+    x(8) = CS%slope_y_top(i,j,1) / (CS%buoy_norm_h(i,j,1) + CS%subroundoff_shear)
+    x(9) = CS%slope_x_top(i,j,2) / (CS%buoy_norm_h(i,j,2) + CS%subroundoff_shear)
+    x(10) = CS%slope_y_top(i,j,2) / (CS%buoy_norm_h(i,j,2) + CS%subroundoff_shear)
+
+    call ANN_apply(x, y, CS%ann_instance)
+
+    y(1:3) = y(1:3) * CS%Delsq_h(i,j) * CS%mom_norm_h(i,j,1) * CS%mom_norm_h(i,j,1) !upper layer Reynolds stresses, uu, uv, vv
+    y(4:6) = y(4:6) * CS%Delsq_h(i,j) * CS%mom_norm_h(i,j,2) * CS%mom_norm_h(i,j,2) !lower layer Reynolds stresses, uu, uv, vv
+    y(7:8) = y(7:8) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * CS%mom_norm_h(i,j,1) * CS%buoy_norm_h(i,j,2) !dual form stresses at interface
+    y(9) = y(9) * CS%Delsq_h(i,j) * CS%GFS * CS%buoy_norm_h(i,j,1) * CS%buoy_norm_h(i,j,1) !subfilter PE in upper layer
+    y(10) = y(10) * CS%Delsq_h(i,j) * CS%GINT * CS%buoy_norm_h(i,j,2) * CS%buoy_norm_h(i,j,2) !subfilter PE in lower layer
+
+
+    CS%Txx(i,j,1) = y(1)
+    CS%Txx_PE(i,j,1) = (y(9) / h(i,j,1))
+    !CS%Txx(i,j,1) = y(1) + (y(9) / h(i,j,1))
+    Txy(i,j,1) = y(2) 
+    !CS%Tyy(i,j,1) = y(3) + (y(9) / h(i,j,1))
+    CS%Tyy(i,j,1) = y(3)
+    CS%Tyy_PE(i,j,1) = (y(9) / h(i,j,1))
+    !CS%Txx(i,j,2) = y(4) + (y(10) / h(i,j,2))
+    CS%Txx(i,j,2) = y(4)
+    CS%Txx_PE(i,j,2) = (y(10) / h(i,j,2))
+    Txy(i,j,2) = y(5)
+    !CS%Tyy(i,j,2) = y(6) + (y(10) / h(i,j,2))
+    CS%Tyy(i,j,2) = y(6)
+    CS%Tyy_PE(i,j,2) = (y(10) / h(i,j,2))
+    CS%Txz(i,j,1) = -y(7) !zero top BC - dual form stress
+    CS%Txz(i,j,2) = y(7) !dual form stress - zero bottom BC
+    CS%Tyz(i,j,1) = -y(8) !zero top BC - dual form stress
+    CS%Tyz(i,j,2) = y(8) !dual form stress - zero bottom BC
+  enddo; enddo
+
+  do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
+    CS%Txy(I,J,1) = 0.25 * ( (Txy(i+1,j+1,1) + Txy(i,j,1)) &
+                           + (Txy(i+1,j,1)   + Txy(i,j+1,1))) * G%mask2dBu(I,J)
+    CS%Txy(I,J,2) = 0.25 * ( (Txy(i+1,j+1,2) + Txy(i,j,2)) &
+                           + (Txy(i+1,j,2)   + Txy(i,j+1,2))) * G%mask2dBu(I,J)
+  enddo; enddo
+  
+  call pass_var(CS%Txy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
+  call pass_var(CS%Txx, G%Domain, clock=CS%id_clock_mpi)
+  call pass_var(CS%Tyy, G%Domain, clock=CS%id_clock_mpi)
+  call pass_var(CS%Txx_PE, G%Domain, clock = CS%id_clock_mpi)
+  call pass_var(CS%Tyy_PE, G%Domain, clock = CS%id_clock_mpi)
+
+  call cpu_clock_end(CS%id_clock_stress_ANN)
+
+end subroutine compute_stress_ANN_collocated_column
+
 !> Compute the divergence of subgrid stress
 !! weighted with thickness, i.e.
 !! (fx,fy) = 1/h Div(h * [Txx, Txy; Txy, Tyy; Txz, Tyz])
@@ -684,7 +903,9 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G)) :: &
         Mxx, & ! Subgrid stress Txx multiplied by thickness and dy^2 [H L4 T-2 ~> m5 s-2]
-        Myy    ! Subgrid stress Tyy multiplied by thickness and dx^2 [H L4 T-2 ~> m5 s-2]
+        Myy, & ! Subgrid stress Tyy multiplied by thickness and dx^2 [H L4 T-2 ~> m5 s-2]
+        Mxx_PE, & ! Subgrid stress Txx_PE multiplied by thickness and dy^2 [H L4 T-2 ~> m5 s-2]
+        Myy_PE ! Subgrid stress Tyy_PE multiplied by thickness and dx^2 [H L4 T-2 ~> m5 s-2]
 
   real, dimension(SZIB_(G),SZJB_(G)) :: &
         Mxy    ! Subgrid stress Txy multiplied by thickness [H L2 T-2 ~> m3 s-2]
@@ -705,17 +926,21 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
 
   real :: h_u ! Thickness interpolated to u points [H ~> m or kg m-2].
   real :: h_v ! Thickness interpolated to v points [H ~> m or kg m-2].
-  real :: fx  ! Zonal acceleration      [L T-2 ~> m s-2]
-  real :: fy  ! Meridional acceleration [L T-2 ~> m s-2]
-  real :: fx_z ! Zonal acceleration due to form stress divergence
-  real :: fy_z ! Meridional acceleration due to form stress divergence
+  real :: fxx  ! Zonal acceleration due to Reynolds stresses [L T-2 ~> m s-2]
+  real :: fxy  ! Zonal acceleration due to Reynolds stresses [L T-2 ~> m s-2]
+  real :: fyx  ! Meridional acceleration due to Reynolds stresses [L T-2 ~> m s-2]
+  real :: fyy  ! Meridional acceleration due to Reynolds stresses [L T-2 ~> m s-2]
+  real :: fx_PE  ! Zonal acceleration due to subfilter PE [L T-2 ~> m s-2]
+  real :: fy_PE  ! Meridional acceleration due to subfilter PE [L T-2 ~> m s-2]
+  real :: fxz ! Zonal acceleration due to form stress divergence
+  real :: fyz ! Meridional acceleration due to form stress divergence
 
   real :: h_neglect    ! Thickness so small it can be lost in
                        ! roundoff and so neglected [H ~> m or kg m-2]
 
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   integer :: i, j, k
-  logical :: save_EPFu, save_EPFv ! Save the acceleration due to ZB2020 model
+  logical :: save_EPFu, save_EPFv ! Save the acceleration due to EPF model
   
   character(len=100) :: message
 
@@ -738,7 +963,9 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
 
     do j=js-1,je+1 ; do i=is-1,ie+1
       Mxx(i,j) = ((CS%Txx(i,j,k)) * h(i,j,k)) * dy2h(i,j)
-      Myy(i,j) = ((CS%Tyy(i,j,k)) * h(i,j,k)) * dx2h(i,j)     
+      Myy(i,j) = ((CS%Tyy(i,j,k)) * h(i,j,k)) * dx2h(i,j) 
+      Mxx_PE(i,j) = ((CS%Txx_PE(i,j,k)) * h(i,j,k)) * dy2h(i,j)
+      Myy_PE(i,j) = ((CS%Tyy_PE(i,j,k)) * h(i,j,k)) * dx2h(i,j)    
     enddo ; enddo
 
 
@@ -747,48 +974,74 @@ subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy
     ! but here is the discretization of div(S)
     do j=js,je ; do I=Isq,Ieq
       h_u = 0.5 * (G%mask2dT(i,j)*h(i,j,k) + G%mask2dT(i+1,j)*h(i+1,j,k)) + h_neglect 
-      fx = -((G%IdyCu(I,j)*(Mxx(i,j)                - &
-                            Mxx(i+1,j))             + &
-              G%IdxCu(I,j)*(dx2q(I,J-1)*Mxy(I,J-1)  - &
-                            dx2q(I,J)  *Mxy(I,J)))  * &
+      fxx = ((G%IdyCu(I,j)*(Mxx(i,j) - Mxx(i+1,j))) * G%IareaCu(I,j)) / h_u
+      fxy = ((G%IdxCu(I,j)*(dx2q(I,J-1)*Mxy(I,J-1) - dx2q(I,J)*Mxy(I,J))) * G%IareaCu(I,j)) / h_u
+      ! fx = ((G%IdyCu(I,j)*(Mxx(i,j)                - &
+      !                       Mxx(i+1,j))             + &
+      !         G%IdxCu(I,j)*(dx2q(I,J-1)*Mxy(I,J-1)  - &
+      !                       dx2q(I,J)  *Mxy(I,J)))  * &
+      !         G%IareaCu(I,j)) / h_u
+      fx_PE = ((G%IdyCu(I,j)*(Mxx_PE(i,j)                - &
+                            Mxx_PE(i+1,j)))  * &
               G%IareaCu(I,j)) / h_u
-      fx_z = - 0.5 * (CS%Txz(i,j,k) + CS%Txz(i+1,j,k)) / h_u
+      fxz = (CS%fz_sign*0.5) * (CS%Txz(i,j,k) + CS%Txz(i+1,j,k)) / h_u
       !diffu(I,j,k) = diffu(I,j,k) !+ fx + fx_z
       CS%f_u(I,j,k)  = diffu(I,j,k)
-      CS%fx(I,j,k) = fx
-      CS%fx_z(I,j,k) = fx_z
+      CS%fxx(I,j,k) = fxx
+      CS%fxy(I,j,k) = fxy
+      CS%fx_PE(I,j,k) = fx_PE
+      CS%fxz(I,j,k) = fxz
+      if (CS%add_EPF_fxx) then
+        diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fxx)
+      endif
       if (CS%add_EPF_fxy) then
-        diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fx)
+        diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fxy)
+      endif
+
+      if (CS%add_EPF_subPE) then
+        diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fx_PE)
       endif
 
       if (CS%add_EPF_fz) then
-        diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fx_z)
+        diffu(I,j,k) = diffu(I,j,k) + (CS%amplitude * fxz)
       endif
-      
-      
-
     enddo ; enddo
 
     ! Evaluate 1/h y.Div(h S) (Line 1517 of MOM_hor_visc.F90)
     do J=Jsq,Jeq ; do i=is,ie
       h_v = 0.5 * (G%mask2dT(i,j)*h(i,j,k) + G%mask2dT(i,j+1)*h(i,j+1,k)) + h_neglect
-      fy = -((G%IdyCv(i,J)*(dy2q(I-1,J)*Mxy(I-1,J)  - &
-                            dy2q(I,J)  *Mxy(I,J))   + & ! NOTE this plus
-              G%IdxCv(i,J)*(Myy(i,j)                - &
-                            Myy(i,j+1)))            * &
+      fyx = ((G%IdyCv(i,J)*(dy2q(I-1,J)*Mxy(I-1,J) - dy2q(I,J)*Mxy(I,J)))*G%IareaCv(i,J)) / h_v
+      fyy = ((G%IdxCv(i,J)*(Myy(i,j) - Myy(i,j+1))) * G%IareaCv(i,J)) / h_v
+      ! fy = ((G%IdyCv(i,J)*(dy2q(I-1,J)*Mxy(I-1,J)  - &
+      !                       dy2q(I,J)  *Mxy(I,J))   + & ! NOTE this plus
+      !         G%IdxCv(i,J)*(Myy(i,j)                - &
+      !                       Myy(i,j+1)))            * &
+      !         G%IareaCv(i,J)) / h_v
+      fy_PE = ((G%IdxCv(i,J)*(Myy_PE(i,j)                - &
+                            Myy_PE(i,j+1)))            * &
               G%IareaCv(i,J)) / h_v
-      fy_z = - 0.5 * (CS%Tyz(i,j,k) + CS%Tyz(i,j+1,k)) / h_v
+      fyz = (CS%fz_sign*0.5) * (CS%Tyz(i,j,k) + CS%Tyz(i,j+1,k)) / h_v
       !diffv(i,J,k) = diffv(i,J,k) !+ fy + fy_z
       CS%f_v(i,J,k) = diffv(I,j,k)
-      CS%fy(i,J,k) = fy
-      CS%fy_z(i,J,k) = fy_z
+      CS%fyx(i,J,k) = fyx
+      CS%fyy(i,J,k) = fyy
+      CS%fy_PE(i,J,k) = fy_PE
+      CS%fyz(i,J,k) = fyz
 
-      if (CS%add_EPF_fxy) then
-        diffv(i,J,k) = diffv(i,J,k) + (CS%amplitude * fy)
+      if (CS%add_EPF_fyx) then
+        diffv(i,J,k) = diffv(i,J,k) + (CS%amplitude * fyx)
+      endif
+
+      if (CS%add_EPF_fyy) then
+        diffv(i,J,k) = diffv(i,J,k) + (CS%amplitude * fyy)
+      endif
+
+      if (CS%add_EPF_subPE) then
+        diffv(i,J,k) = diffv(i,J,k) + (CS%amplitude * fy_PE)
       endif
 
       if (CS%add_EPF_fz) then
-        diffv(i,J,k) = diffv(i,J,k) + (CS%amplitude * fy_z)
+        diffv(i,J,k) = diffv(i,J,k) + (CS%amplitude * fyz)
       endif
       
     enddo ; enddo
@@ -846,7 +1099,11 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
 
   ! Compute the stress tensor given the
   ! (optionally sharpened) velocity gradients
-  call compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
+  if (CS%ann_type == 0) then
+    call compute_stress_ANN_collocated(h, tv, G, GV, CS, US, VarMix, OBC)
+  else if (CS%ann_type == 1) then
+    call compute_stress_ANN_collocated_column(h, tv, G, GV, CS, US, VarMix, OBC)
+  endif
   !call compute_stress_ANN_collocated(G, GV, CS)
 
   ! Update the acceleration due to eddy viscosity (diffu, diffv)
@@ -858,6 +1115,8 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   call cpu_clock_begin(CS%id_clock_post)
   if (CS%id_Txx > 0) call post_data(CS%id_Txx, CS%Txx, CS%diag)
   if (CS%id_Tyy > 0) call post_data(CS%id_Tyy, CS%Tyy, CS%diag)
+  if (CS%id_Txx_PE > 0) call post_data(CS%id_Txx_PE, CS%Txx_PE, CS%diag)
+  if (CS%id_Tyy_PE > 0) call post_data(CS%id_Tyy_PE, CS%Tyy_PE, CS%diag)
   if (CS%id_Txy > 0) call post_data(CS%id_Txy, CS%Txy, CS%diag)
   if (CS%id_Txz > 0) call post_data(CS%id_Txz, CS%Txz, CS%diag)
   if (CS%id_Tyz > 0) call post_data(CS%id_Tyz, CS%Tyz, CS%diag)
@@ -885,12 +1144,16 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   if (CS%id_buoy_norm_h > 0) call post_data(CS%id_buoy_norm_h, CS%buoy_norm_h, CS%diag)
 
   if (CS%id_f_u > 0) call post_data(CS%id_f_u, CS%f_u, CS%diag)
-  if (CS%id_fx > 0) call post_data(CS%id_fx, CS%fx, CS%diag)
-  if (CS%id_fxz > 0) call post_data(CS%id_fxz, CS%fx_z, CS%diag)
+  if (CS%id_fxx > 0) call post_data(CS%id_fxx, CS%fxx, CS%diag)
+  if (CS%id_fxy > 0) call post_data(CS%id_fxy, CS%fxy, CS%diag)
+  if (CS%id_fx_PE > 0) call post_data(CS%id_fx_PE, CS%fx_PE, CS%diag)
+  if (CS%id_fxz > 0) call post_data(CS%id_fxz, CS%fxz, CS%diag)
 
   if (CS%id_f_v > 0) call post_data(CS%id_f_v, CS%f_v, CS%diag)
-  if (CS%id_fy > 0) call post_data(CS%id_fy, CS%fy, CS%diag)
-  if (CS%id_fyz > 0) call post_data(CS%id_fyz, CS%fy_z, CS%diag)
+  if (CS%id_fyx > 0) call post_data(CS%id_fyx, CS%fyx, CS%diag)
+  if (CS%id_fyy > 0) call post_data(CS%id_fyy, CS%fyy, CS%diag)
+  if (CS%id_fy_PE > 0) call post_data(CS%id_fy_PE, CS%fy_PE, CS%diag)
+  if (CS%id_fyz > 0) call post_data(CS%id_fyz, CS%fyz, CS%diag)
 
   call cpu_clock_end(CS%id_clock_post)
 
@@ -910,6 +1173,8 @@ subroutine EPF_end(CS)
 
   deallocate(CS%Txx)
   deallocate(CS%Tyy)
+  deallocate(CS%Txx_PE)
+  deallocate(CS%Tyy_PE)
   deallocate(CS%Txy)
   deallocate(CS%Txy_h)
   deallocate(CS%Txz)
@@ -935,12 +1200,16 @@ subroutine EPF_end(CS)
   deallocate(CS%buoy_norm_h)
 
   deallocate(CS%f_u)
-  deallocate(CS%fx)
-  deallocate(CS%fx_z)
+  deallocate(CS%fxx)
+  deallocate(CS%fxy)
+  deallocate(CS%fx_PE)
+  deallocate(CS%fxz)
 
   deallocate(CS%f_v)
-  deallocate(CS%fy)
-  deallocate(CS%fy_z)
+  deallocate(CS%fyx)
+  deallocate(CS%fyy)
+  deallocate(CS%fy_PE)
+  deallocate(CS%fyz)
   
 end subroutine EPF_end
 
