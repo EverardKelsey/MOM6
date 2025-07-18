@@ -38,10 +38,14 @@ type, public :: EPF_CS ; private
   real      :: H_cutoff         !< cutoff depth from which isopycnal slopes are calculated, should be min ocean depth as default
   real      :: GFS              !< Reduced gravity at free surface
   real      :: GINT             !< reduced gravity at layer interface
+  integer   :: stencil_size     !< the width of the spatial stencil to be used
   logical   :: add_EPF_fxy      !< update the diffusivities with horizontal divergence of EPF? 
   logical   :: add_EPF_fz       !< update the diffusivities with vertical divergence of EPF?
   logical   :: apply_GM         !< do we use GM for dual form stresses?
-  logical   :: add_GM         !< do we use GM for dual form stresses?
+  logical   :: add_GM           !< do we use GM for dual form stresses?
+  logical   :: input_stencil    !< Should inputs be taken from some spatial stencil around input location? 
+  logical   :: debug_momANN     !< save extra information to debug momentum ANN implementation?
+  logical   :: debug_buoyANN     !< save extra information to debug buoyancy ANN implementation?
   
   ! allocating memory in the heap. Should allocate memory here for things needed in subsequent timesteps
   real, dimension(:,:,:), allocatable :: &
@@ -97,6 +101,17 @@ type, public :: EPF_CS ; private
         Coriolis_h(:,:), &     !< Coriolis parameter at h points [T ~> s]
         Coriolis_u(:,:), &     !< Coriolis parameter at u points [T ~> s]
         Coriolis_v(:,:)     !< Coriolis parameter at v points [T ~> s]
+  
+  real, dimension(:,:,:), allocatable :: & ! these are included for debugging purposes
+        mom_input1, & ! the inputs to the momentum flux ann
+        mom_input2, & ! the inputs to the momentum flux ann
+        mom_input3, & ! the inputs to the momentum flux ann
+        mom_input4, & ! the inputs to the momentum flux ann
+        mom_input5, & ! the inputs to the momentum flux ann
+        mom_input6, & ! the inputs to the momentum flux ann
+        mom_input7, & ! the inputs to the momentum flux ann
+        mom_input8, & ! the inputs to the momentum flux ann
+        mom_input9 ! the inputs to the momentum flux ann  
 
   !integer :: use_ann  !< 0: ANN is turned off, 1: default ANN for EPF
   integer :: n_inputs_intfc !< Number of inputs to the interface ANN, default is 5
@@ -136,6 +151,10 @@ type, public :: EPF_CS ; private
   integer :: id_fxz = -1, id_fyz = -1
   integer :: id_fxz_GM = -1, id_fyz_GM = -1
   integer :: id_f_u = -1, id_f_v = -1
+  integer :: id_mom_input1 = -1, id_mom_input2 = -1
+  integer :: id_mom_input3 = -1, id_mom_input4 = -1
+  integer :: id_mom_input5 = -1, id_mom_input6 = -1
+  integer :: id_mom_input7 = -1, id_mom_input8 = -1, id_mom_input9 = -1
   !>@}
 
   !>@{ CPU time clock IDs
@@ -217,6 +236,16 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   call ANN_init(CS%ann_instance_intfc, CS%intfc_ann_file)
   call ANN_init(CS%ann_instance_centre, CS%centre_ann_file)
 
+  call get_param(param_file, mdl, "INPUT_STENCIL", CS%input_stencil, &
+                    "If yes, use as input a stencil of information around inference point", &
+                    default = .false.)
+  call get_param(param_file, mdl, "N_STENCIL", CS%stencil_size, &
+                    "width of the spatial stencil around inference point from which to grab input information from", &
+                    default = 3)
+  call get_param(param_file, mdl, "DEBUG_MOM_ANN", CS%debug_momANN, &
+                    "Save extra information for debugging purposes? This is for spatial stencil debugging at moment", &
+                    default = .false.)
+            
   ! Parameters that relate to whether certain flux divergences are used to update the diffusivities
   call get_param(param_file, mdl, "ADD_FXY", CS%add_EPF_fxy, &
                  "If true, updates diffusivities with horizontal divergence of EPF.", &
@@ -286,6 +315,27 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
 
   CS%id_Tyz = register_diag_field('ocean_model', 'Tyz', diag%axesTi, Time, &
       'Meridional form stress', 'm2 s-2', conversion=US%L_T_to_m_s**2)
+
+  ! Registering too many fields for debugging spatial stencil ANN
+  CS%id_mom_input1 = register_diag_field('ocean_model', 'mom_input1', &
+       diag%axesTL, Time, 'First input to the momentum flux ANN', 'nondim')  
+  CS%id_mom_input2 = register_diag_field('ocean_model', 'mom_input2', &
+       diag%axesTL, Time, 'second input to the momentum flux ANN', 'nondim')  
+  CS%id_mom_input3 = register_diag_field('ocean_model', 'mom_input3', &
+       diag%axesTL, Time, 'third input to the momentum flux ANN', 'nondim')  
+  CS%id_mom_input4 = register_diag_field('ocean_model', 'mom_input4', &
+       diag%axesTL, Time, 'fourth input to the momentum flux ANN', 'nondim')
+  CS%id_mom_input5 = register_diag_field('ocean_model', 'mom_input5', &
+       diag%axesTL, Time, 'fifth input to the momentum flux ANN', 'nondim')  
+  CS%id_mom_input6 = register_diag_field('ocean_model', 'mom_input6', &
+       diag%axesTL, Time, 'sixth input to the momentum flux ANN', 'nondim')  
+  CS%id_mom_input7 = register_diag_field('ocean_model', 'mom_input7', &
+       diag%axesTL, Time, 'seventh input to the momentum flux ANN', 'nondim')  
+  CS%id_mom_input8 = register_diag_field('ocean_model', 'mom_input8', &
+       diag%axesTL, Time, 'eighth input to the momentum flux ANN', 'nondim')
+  CS%id_mom_input9 = register_diag_field('ocean_model', 'mom_input9', &
+       diag%axesTL, Time, 'nineth input to the momentum flux ANN', 'nondim')
+
 
   ! Registering fields for debugging purposes
   CS%id_slope_x = register_diag_field('ocean_model', 'slope_x', diag%axesCui, Time, &
@@ -440,6 +490,15 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   allocate(CS%fyz(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
   allocate(CS%fyz_GM(SZI_(G),SZJB_(G),SZK_(GV)), source=0.)
 
+  allocate(CS%mom_input1(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%mom_input2(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%mom_input3(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%mom_input4(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%mom_input5(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%mom_input6(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%mom_input7(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%mom_input8(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+  allocate(CS%mom_input9(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   subroundoff_Cor = 1e-30 * US%T_to_s
   ! Precomputing f
   do j=js-1,je+1 ; do i=is-1,ie+1
@@ -687,9 +746,9 @@ subroutine compute_intfc_stress_ANN(h, tv, G, GV, CS, US, VarMix, OBC)
     else
         if (CS%n_inputs_intfc == 5) then !in this case, we are only taking velocity from upper layer
             do j=js-2,je+2 ; do i=is-2,ie+2
-                x_intfc(1) = CS%vort_xy_h(i,j,k-1)
-                x_intfc(2) = CS%sh_xx(i,j,k-1)
-                x_intfc(3) = CS%sh_xy_h(i,j,k-1)
+                x_intfc(1) = CS%vort_xy_h(i,j,k-1) !vorticity
+                x_intfc(2) = CS%sh_xx(i,j,k-1) !stretch
+                x_intfc(3) = CS%sh_xy_h(i,j,k-1) !strain
                 x_intfc(4) = CS%slope_x(i,j,k)
                 x_intfc(5) = CS%slope_y(i,j,k)
 
@@ -704,7 +763,7 @@ subroutine compute_intfc_stress_ANN(h, tv, G, GV, CS, US, VarMix, OBC)
                 CS%Txz(i,j,k) = y_intfc(1) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
                 CS%Tyz(i,j,k) = y_intfc(2) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
             enddo; enddo
-        else if (CS%n_inputs_intfc == 7) then ! in this case, upper and lower velocity info is given as input
+        else if (CS%n_inputs_intfc == 8) then ! in this case, upper and lower velocity info is given as input
             do j=js-2,je+2 ; do i=is-2,ie+2
                 x_intfc(1) = CS%vort_xy_h(i,j,k-1)
                 x_intfc(2) = CS%sh_xx(i,j,k-1)
@@ -735,6 +794,139 @@ subroutine compute_intfc_stress_ANN(h, tv, G, GV, CS, US, VarMix, OBC)
 
 end subroutine compute_intfc_stress_ANN
 
+subroutine compute_intfc_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
+  type(ocean_grid_type),     intent(in)    :: G    !< The ocean's grid structure.
+  type(verticalGrid_type),   intent(in)    :: GV   !< The ocean's vertical grid structure
+  type(EPF_CS),              intent(inout) :: CS   !< EPS control structure.
+  type(unit_scale_type),     intent(in)    :: US    !< A dimensional unit scaling type
+  type(VarMix_CS), target,   intent(inout)    :: VarMix !< Variable mixing coefficients
+  type(thermo_var_ptrs),     intent(in)    :: tv  !<thermodynamics structure
+  type(ocean_OBC_type),      pointer       :: OBC !< Open boundaries control structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
+  !real,                                      intent(in)    :: dt !< Time increment [T ~> s]
+   
+  integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
+  integer :: i, j, k, n, ii, jj
+
+  real :: x_intfc(CS%n_inputs_intfc * (CS%stencil_size**2)), y_intfc(CS%n_outputs_intfc)
+  
+  real :: input_norm_mom
+  real :: input_norm_buoy
+  integer :: offset
+  integer :: stencil_points
+  logical :: &
+        use_VarMix, &
+        use_stored_slopes
+        
+  real, dimension(SZIB_(G), SZJ_(G), SZK_(GV)+1) :: &
+        slope_x, &
+        slope_y
+  
+!   real, dimension(SZIB_(G), SZJ_(G), SZK_(GV)+1) :: & ! 
+!         intfc_stress_x, &
+!         intfc_stress_y
+
+  real, dimension(SZI_(G),SZJ_(G)) :: &
+        sqr_h, & ! Sum of squares in h points
+        sqr_eta_h
+        ! Txy      ! Predicted Txy in center points to be interpolated to corners
+
+  call cpu_clock_begin(CS%id_clock_intfc_stress_ANN)
+
+  is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
+  Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
+
+  call pass_var(CS%sh_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
+  call pass_var(CS%sh_xx, G%Domain, clock=CS%id_clock_mpi)
+  call pass_var(CS%vort_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
+  
+  call find_eta(h, tv, G, GV, US, CS%eta, halo_size=1) ! calculating the interface height
+  call pass_var(CS%eta, G%Domain, clock=CS%id_clock_mpi)
+  CS%h_eta = h
+  call slope_calc(G, GV, CS) ! calculating the interface slopes instead of relying on VarMix
+  call pass_vector(CS%slope_x, CS%slope_y, G%Domain, clock=CS%id_clock_mpi)
+  
+  call make_mask(h, G, GV, CS) !creating the mask based off of depth
+  ! Interpolate input features
+  do k=1,nz
+    do j=js-2,je+2 ; do i=is-2,ie+2
+      ! It is assumed that B.C. is applied to sh_xy and vort_xy
+      CS%sh_xy_h(i,j,k) = 0.25 * ( (CS%sh_xy(I-1,J-1,k) + CS%sh_xy(I,J,k)) &
+                       + (CS%sh_xy(I-1,J,k) + CS%sh_xy(I,J-1,k)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+
+      CS%vort_xy_h(i,j,k) = 0.25 * ( (CS%vort_xy(I-1,J-1,k) + CS%vort_xy(I,J,k)) &
+                         + (CS%vort_xy(I-1,J,k) + CS%vort_xy(I,J-1,k)) ) * G%mask2dT(i,j)* CS%depth_mask(i,j,k)
+      
+      CS%slope_x_top(i,j,k) = 0.5 * (( (CS%slope_x(I-1,j,k) + CS%slope_x(I,j,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j) 
+      CS%slope_y_top(i,j,k) = 0.5 * (( (CS%slope_y(i,J-1,k) + CS%slope_y(i,J,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j)
+      CS%slope_x_bot(i,j,k) = 0.5 * ( (CS%slope_x(I-1,j,k+1) + CS%slope_x(I,j,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+      CS%slope_y_bot(i,j,k) = 0.5 * ( (CS%slope_y(i,J-1,k+1) + CS%slope_y(i,J,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+
+
+      sqr_eta_h(i,j) = (CS%slope_x_top(i,j,k)**2) + (CS%slope_y_top(i,j,k)**2)
+      sqr_h(i,j) = (CS%sh_xx(i,j,k)**2) + (CS%sh_xy_h(i,j,k)**2) + (CS%vort_xy_h(i,j,k)**2)
+      
+      CS%mom_norm_h(i,j,k) = sqrt(sqr_h(i,j))
+      CS%buoy_norm_h(i,j,k) = sqrt(sqr_eta_h(i,j))
+      
+    enddo; enddo
+  enddo
+
+  offset = (CS%stencil_size-1)/2 ! the indexing offsets for input stencil
+  stencil_points = CS%stencil_size**2 ! number of spatial points for each input due to stencil
+
+  ! a loop which calculates the interface flux(es)
+  do k=1, nz+1 ! We will apply the BCs to the very top and very bottom interface
+    if ((k==1) .or. (k==nz+1)) then
+        CS%Txz(i,j,k) = 0
+        CS%Tyz(i,j,k) = 0
+    else
+        if (CS%n_inputs_intfc == 5) then !in this case, we are only taking velocity from upper layer
+            do j=js-2+offset,je+2-offset ; do i=is-2+offset,ie+2-offset !including offset here so that I don't call for values from points out of bounds of grid
+              ! Norms are based off of values of inputs at inference point
+              input_norm_mom = CS%mom_norm_h(i,j,k-1) !use upper velocity inputs for normalisation
+              input_norm_buoy = CS%buoy_norm_h(i,j,k) !the buoy norm is based off of top interface slopes
+              n = 1
+              do jj = j-offset, j+offset; do ii = i-offset, i+offset
+                x_intfc(n) = CS%vort_xy_h(ii,jj,k-1) / (input_norm_mom + CS%subroundoff_shear)
+                x_intfc(n+stencil_points) = CS%sh_xx(ii,jj,k-1) / (input_norm_mom + CS%subroundoff_shear)
+                x_intfc(n + (2*stencil_points)) = CS%sh_xy_h(ii,jj,k-1) / (input_norm_mom + CS%subroundoff_shear)
+                x_intfc(n + (3*stencil_points)) = CS%slope_x(ii,jj,k) / (input_norm_buoy + CS%subroundoff_shear)
+                x_intfc(n + (4*stencil_points)) = CS%slope_y(ii,jj,k) / (input_norm_buoy + CS%subroundoff_shear)
+                n = n + 1
+              enddo;enddo
+              call ANN_apply(x_intfc, y_intfc, CS%ann_instance_intfc)
+
+              CS%Txz(i,j,k) = y_intfc(1) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
+              CS%Tyz(i,j,k) = y_intfc(2) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
+            enddo; enddo
+        else if (CS%n_inputs_intfc == 8) then ! in this case, upper and lower velocity info is given as input
+            do j=js-2+offset,je+2-offset ; do i=is-2+offset,ie+2-offset
+              input_norm_mom = CS%mom_norm_h(i,j,k-1) !use upper velocity output for normalisation
+              input_norm_buoy = CS%buoy_norm_h(i,j,k) !the buoy norm is based off of top interface slopes
+              n = 1
+              do jj = j-offset, j+offset; do ii = i-offset, i+offset
+                x_intfc(n) = CS%vort_xy_h(ii,jj,k-1) / (CS%mom_norm_h(i,j,k-1) + CS%subroundoff_shear)
+                x_intfc(n + (stencil_points)) = CS%sh_xx(ii,jj,k-1) / (CS%mom_norm_h(i,j,k-1) + CS%subroundoff_shear)
+                x_intfc(n + (2*stencil_points)) = CS%sh_xy_h(ii,jj,k-1) / (CS%mom_norm_h(i,j,k-1) + CS%subroundoff_shear)
+                x_intfc(n + (3*stencil_points)) = CS%vort_xy_h(ii,jj,k) / (CS%mom_norm_h(i,j,k) + CS%subroundoff_shear)
+                x_intfc(n + (4*stencil_points)) = CS%sh_xx(ii,jj,k) / (CS%mom_norm_h(i,j,k) + CS%subroundoff_shear)
+                x_intfc(n + (5*stencil_points)) = CS%sh_xy_h(ii,jj,k) / (CS%mom_norm_h(i,j,k) + CS%subroundoff_shear)
+                x_intfc(n + (6*stencil_points)) = CS%slope_x(ii,jj,k) / (CS%buoy_norm_h(i,j,k) + CS%subroundoff_shear)
+                x_intfc(n + (7*stencil_points)) = CS%slope_y(ii,jj,k) / (CS%buoy_norm_h(i,j,k) + CS%subroundoff_shear)
+                n = n+1
+              enddo; enddo
+              call ANN_apply(x_intfc, y_intfc, CS%ann_instance_intfc)
+
+              CS%Txz(i,j,k) = y_intfc(1) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
+              CS%Tyz(i,j,k) = y_intfc(2) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
+            enddo; enddo
+        endif
+    endif
+  enddo
+
+  call cpu_clock_end(CS%id_clock_intfc_stress_ANN)
+end subroutine compute_intfc_stress_ANN_stencil
 
 subroutine compute_GM_forcing(h, u, v, tv, G, GV, CS, US, VarMix, OBC)
   type(ocean_grid_type),     intent(in)    :: G    !< The ocean's grid structure.
@@ -899,6 +1091,126 @@ do k=1,nz
 
 end subroutine compute_centre_stress_ANN
 
+subroutine compute_centre_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
+  type(ocean_grid_type),     intent(in)    :: G    !< The ocean's grid structure.
+  type(verticalGrid_type),   intent(in)    :: GV   !< The ocean's vertical grid structure
+  type(EPF_CS),              intent(inout) :: CS   !< EPS control structure.
+  type(unit_scale_type),     intent(in)    :: US    !< A dimensional unit scaling type
+  type(VarMix_CS), target,   intent(inout)    :: VarMix !< Variable mixing coefficients
+  type(thermo_var_ptrs),     intent(in)    :: tv  !<thermodynamics structure
+  type(ocean_OBC_type),      pointer       :: OBC !< Open boundaries control structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
+  !real,                                      intent(in)    :: dt !< Time increment [T ~> s]
+   
+  integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
+  integer :: i, j, k, n, ii, jj
+
+  real :: x_centre(CS%n_inputs_centre * (CS%stencil_size**2)), y_centre(CS%n_outputs_centre)
+  
+  real :: input_norm_mom
+  real :: input_norm_buoy
+  integer :: offset
+  integer :: stencil_points
+  logical :: &
+        use_VarMix, &
+        use_stored_slopes
+        
+  real, dimension(SZIB_(G), SZJ_(G), SZK_(GV)+1) :: &
+        slope_x, &
+        slope_y
+  
+  real, dimension(SZI_(G),SZJ_(G)) :: &
+        sqr_h, & ! Sum of squares in h points
+        sqr_eta_h, &
+        Txy      ! Predicted Txy in center points to be interpolated to corners
+
+  call cpu_clock_begin(CS%id_clock_centre_stress_ANN)
+
+  is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
+  Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
+
+  call pass_var(CS%sh_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
+  call pass_var(CS%sh_xx, G%Domain, clock=CS%id_clock_mpi)
+  call pass_var(CS%vort_xy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
+  
+  call find_eta(h, tv, G, GV, US, CS%eta, halo_size=1) ! calculating the interface height
+  call pass_var(CS%eta, G%Domain, clock=CS%id_clock_mpi)
+  CS%h_eta = h
+  call slope_calc(G, GV, CS) ! calculating the interface slopes instead of relying on VarMix
+  call pass_vector(CS%slope_x, CS%slope_y, G%Domain, clock=CS%id_clock_mpi)
+  
+  call make_mask(h, G, GV, CS) !creating the mask based off of depth
+  ! Interpolate input features
+  do k=1,nz
+    do j=js-2,je+2 ; do i=is-2,ie+2
+      ! It is assumed that B.C. is applied to sh_xy and vort_xy
+      CS%sh_xy_h(i,j,k) = 0.25 * ( (CS%sh_xy(I-1,J-1,k) + CS%sh_xy(I,J,k)) &
+                       + (CS%sh_xy(I-1,J,k) + CS%sh_xy(I,J-1,k)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+
+      CS%vort_xy_h(i,j,k) = 0.25 * ( (CS%vort_xy(I-1,J-1,k) + CS%vort_xy(I,J,k)) &
+                         + (CS%vort_xy(I-1,J,k) + CS%vort_xy(I,J-1,k)) ) * G%mask2dT(i,j)* CS%depth_mask(i,j,k)
+      
+      ! CS%slope_x_top(i,j,k) = 0.5 * (( (CS%slope_x(I-1,j,k) + CS%slope_x(I,j,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j) 
+      ! CS%slope_y_top(i,j,k) = 0.5 * (( (CS%slope_y(i,J-1,k) + CS%slope_y(i,J,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j)
+      ! CS%slope_x_bot(i,j,k) = 0.5 * ( (CS%slope_x(I-1,j,k+1) + CS%slope_x(I,j,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+      ! CS%slope_y_bot(i,j,k) = 0.5 * ( (CS%slope_y(i,J-1,k+1) + CS%slope_y(i,J,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+
+      ! sqr_eta_h(i,j) = (CS%slope_x_top(i,j,k)**2) + (CS%slope_y_top(i,j,k)**2)
+      sqr_h(i,j) = (CS%sh_xx(i,j,k)**2) + (CS%sh_xy_h(i,j,k)**2) + (CS%vort_xy_h(i,j,k)**2)
+      
+      CS%mom_norm_h(i,j,k) = sqrt(sqr_h(i,j))
+      ! CS%buoy_norm_h(i,j,k) = sqrt(sqr_eta_h(i,j))
+      
+    enddo; enddo
+  enddo
+
+offset = (CS%stencil_size-1)/2 ! the indexing offsets for input stencil
+stencil_points = CS%stencil_size**2 ! number of spatial points for each input due to stencil
+do k=1,nz
+    do j=js-2+offset,je+2-offset ; do i=is-2+offset,ie+2-offset
+      input_norm_mom = CS%mom_norm_h(i,j,k)
+      n = 1
+      do jj = j-offset, j+offset; do ii = i-offset, i+offset
+        x_centre(n) = CS%vort_xy_h(ii,jj,k) / (input_norm_mom + CS%subroundoff_shear)
+        x_centre(n+stencil_points) = CS%sh_xx(ii,jj,k) / (input_norm_mom + CS%subroundoff_shear)
+        x_centre(n+(2*stencil_points)) = CS%sh_xy_h(ii,jj,k) / (input_norm_mom + CS%subroundoff_shear)
+        n = n+1
+      enddo; enddo
+      if (CS%debug_momANN) then
+        CS%mom_input1(i,j,k) = x_centre(1)
+        CS%mom_input2(i,j,k) = x_centre(2)
+        CS%mom_input3(i,j,k) = x_centre(3)
+        CS%mom_input4(i,j,k) = x_centre(4)
+        CS%mom_input5(i,j,k) = x_centre(5)
+        CS%mom_input6(i,j,k) = x_centre(6)
+        CS%mom_input7(i,j,k) = x_centre(7)
+        CS%mom_input8(i,j,k) = x_centre(8)
+        CS%mom_input9(i,j,k) = x_centre(9)
+      endif
+      call ANN_apply(x_centre, y_centre, CS%ann_instance_centre)
+
+      y_centre(1:3) = y_centre(1:3) * CS%Delsq_h(i,j) * input_norm_mom * input_norm_mom
+      
+      CS%Txx(i,j,k) = y_centre(1)
+      Txy(i,j)      = y_centre(2)
+      CS%Tyy(i,j,k) = y_centre(3)
+      CS%Txy_h(i,j,k) = y_centre(2)
+    enddo ; enddo
+    
+    ! Now interpolating the xy stresses to the diagonals (where they should live)
+    do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
+      CS%Txy(I,J,k) = 0.25 * ( (Txy(i+1,j+1) + Txy(i,j)) &
+                             + (Txy(i+1,j)   + Txy(i,j+1))) * G%mask2dBu(I,J)
+    enddo; enddo
+
+  enddo ! end of k loop
+
+  call pass_var(CS%Txy, G%Domain, clock=CS%id_clock_mpi, position=CORNER)
+  call pass_var(CS%Txx, G%Domain, clock=CS%id_clock_mpi)
+  call pass_var(CS%Tyy, G%Domain, clock=CS%id_clock_mpi)
+  
+  call cpu_clock_end(CS%id_clock_centre_stress_ANN)
+end subroutine compute_centre_stress_ANN_stencil
 
 subroutine compute_stress_divergence(u, v, h, diffu, diffv, dx2h, dy2h, dx2q, dy2q, G, GV, CS)
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure.
@@ -1100,12 +1412,14 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
 
   ! Compute the stresses at the interface
-  call compute_intfc_stress_ANN(h, tv, G, GV, CS, US, VarMix, OBC)
+  if (CS%input_stencil) call compute_intfc_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
+  if (.not. CS%input_stencil) call compute_intfc_stress_ANN(h, tv, G, GV, CS, US, VarMix, OBC)
   ! Compute the stresses at the layer centres
-  call compute_centre_stress_ANN(h, tv, G, GV, CS, US, VarMix, OBC)
+  if (CS%input_stencil) call compute_centre_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
+  if (.not. CS%input_stencil) call compute_centre_stress_ANN(h, tv, G, GV, CS, US, VarMix, OBC)
 
-  !if (CS%apply_GM) call compute_GM_forcing(h, u, v, tv, G, GV, CS, US, VarMix, OBC)
-  call compute_GM_forcing(h, u, v, tv, G, GV, CS, US, VarMix, OBC)
+  if (CS%apply_GM) call compute_GM_forcing(h, u, v, tv, G, GV, CS, US, VarMix, OBC)
+  !call compute_GM_forcing(h, u, v, tv, G, GV, CS, US, VarMix, OBC)
   ! Update the acceleration due to eddy viscosity (diffu, diffv)
   ! with the ZB2020 lateral parameterization
   call compute_stress_divergence(u, v, h, diffu, diffv,    &
@@ -1152,6 +1466,17 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   if (CS%id_f_y > 0) call post_data(CS%id_f_y, CS%f_y, CS%diag)
   if (CS%id_fyz > 0) call post_data(CS%id_fyz, CS%fyz, CS%diag)
   if (CS%id_fyz_GM > 0) call post_data(CS%id_fyz_GM, CS%fyz_GM, CS%diag)
+
+  if (CS%id_mom_input1 > 0) call post_data(CS%id_mom_input1, CS%mom_input1, CS%diag)
+  if (CS%id_mom_input2 > 0) call post_data(CS%id_mom_input2, CS%mom_input2, CS%diag)
+  if (CS%id_mom_input3 > 0) call post_data(CS%id_mom_input3, CS%mom_input3, CS%diag)
+  if (CS%id_mom_input4 > 0) call post_data(CS%id_mom_input4, CS%mom_input4, CS%diag)
+  if (CS%id_mom_input5 > 0) call post_data(CS%id_mom_input5, CS%mom_input5, CS%diag)
+  if (CS%id_mom_input6 > 0) call post_data(CS%id_mom_input6, CS%mom_input6, CS%diag)
+  if (CS%id_mom_input7 > 0) call post_data(CS%id_mom_input7, CS%mom_input7, CS%diag)
+  if (CS%id_mom_input8 > 0) call post_data(CS%id_mom_input8, CS%mom_input8, CS%diag)
+  if (CS%id_mom_input9 > 0) call post_data(CS%id_mom_input9, CS%mom_input9, CS%diag)
+
 
   call cpu_clock_end(CS%id_clock_post)
 
@@ -1206,6 +1531,16 @@ subroutine EPF_end(CS)
   deallocate(CS%f_y)
   deallocate(CS%fyz)
   deallocate(CS%fyz_GM)
+
+  deallocate(CS%mom_input1)
+  deallocate(CS%mom_input2)
+  deallocate(CS%mom_input3)
+  deallocate(CS%mom_input4)
+  deallocate(CS%mom_input5)
+  deallocate(CS%mom_input6)
+  deallocate(CS%mom_input7)
+  deallocate(CS%mom_input8)
+  deallocate(CS%mom_input9)
   
 end subroutine EPF_end
 
