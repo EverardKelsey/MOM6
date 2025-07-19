@@ -113,6 +113,20 @@ type, public :: EPF_CS ; private
         mom_input8, & ! the inputs to the momentum flux ann
         mom_input9 ! the inputs to the momentum flux ann  
 
+  real, dimension(:,:), allocatable :: & ! these are included for debugging purposes
+        buoy_input5, & ! the inputs to the buoyancy flux ann, should be centre vorticity in top layer
+        buoy_input14, & ! the inputs to the buoyancy flux ann, should be centre stretch in top layer
+        buoy_input23, & ! the inputs to the buoyancy flux ann, should be centre strain in top layer
+        buoy_input32, & ! the inputs to the buoyancy flux ann, should be centre dedx in top layer
+        buoy_input41, & ! the inputs to the buoyancy flux ann, should be centre dedy in top layer
+        buoy_input2, & ! the inputs to the buoyancy flux ann, should be lower centre vorticity in top layer
+        buoy_input11, & ! the inputs to the buoyancy flux ann, should be lower centre stretch in top layer
+        buoy_input20, & ! the inputs to the buoyancy flux ann, should be lower centre strain in top layer
+        buoy_input29, & ! the inputs to the buoyancy flux ann, should be lower centre dedx in top layer
+        buoy_input38, & ! the inputs to the buoyancy flux ann, should be lower centre dedy in top layer
+        buoy_output1, &
+        buoy_output2
+
   !integer :: use_ann  !< 0: ANN is turned off, 1: default ANN for EPF
   integer :: n_inputs_intfc !< Number of inputs to the interface ANN, default is 5
   integer :: n_outputs_intfc !< Number of outputs from the interface ANN, default is 2
@@ -155,6 +169,13 @@ type, public :: EPF_CS ; private
   integer :: id_mom_input3 = -1, id_mom_input4 = -1
   integer :: id_mom_input5 = -1, id_mom_input6 = -1
   integer :: id_mom_input7 = -1, id_mom_input8 = -1, id_mom_input9 = -1
+  integer :: id_buoy_input5 = -1, id_buoy_input14 = -1
+  integer :: id_buoy_input23 = -1, id_buoy_input32 = -1
+  integer :: id_buoy_input41 = -1
+  integer :: id_buoy_input2 = -1, id_buoy_input11 = -1
+  integer :: id_buoy_input20 = -1, id_buoy_input29 = -1
+  integer :: id_buoy_input38 = -1
+  integer :: id_buoy_output1 = -1, id_buoy_output2 = -1
   !>@}
 
   !>@{ CPU time clock IDs
@@ -243,6 +264,9 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
                     "width of the spatial stencil around inference point from which to grab input information from", &
                     default = 3)
   call get_param(param_file, mdl, "DEBUG_MOM_ANN", CS%debug_momANN, &
+                    "Save extra information for debugging purposes? This is for spatial stencil debugging at moment", &
+                    default = .false.)
+  call get_param(param_file, mdl, "DEBUG_BUOY_ANN", CS%debug_buoyANN, &
                     "Save extra information for debugging purposes? This is for spatial stencil debugging at moment", &
                     default = .false.)
             
@@ -335,6 +359,32 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
        diag%axesTL, Time, 'eighth input to the momentum flux ANN', 'nondim')
   CS%id_mom_input9 = register_diag_field('ocean_model', 'mom_input9', &
        diag%axesTL, Time, 'nineth input to the momentum flux ANN', 'nondim')
+
+  CS%id_buoy_input5 = register_diag_field('ocean_model', 'buoy_input5', &
+       diag%axesTL, Time, 'Fifth input to the buoyancy flux ANN: vorticity in upper layer at inference location', 'nondim')  
+  CS%id_buoy_input14 = register_diag_field('ocean_model', 'buoy_input14', &
+       diag%axesTL, Time, '14th input to the buoyancy flux ANN: stretch rate in upper layer at inference location', 'nondim')  
+  CS%id_buoy_input23 = register_diag_field('ocean_model', 'buoy_input23', &
+       diag%axesTL, Time, '23rd input to the buoyancy flux ANN: strain rate in upper layer at inference location', 'nondim')  
+  CS%id_buoy_input32 = register_diag_field('ocean_model', 'buoy_input32', &
+       diag%axesTL, Time, '32nd input to the buoyancy flux ANN: zonal gradient in interface height at inference location', 'nondim')
+  CS%id_buoy_input41 = register_diag_field('ocean_model', 'buoy_input41', &
+       diag%axesTL, Time, '41st input to the buoyancy flux ANN: meridional gradient in interface height at inference location', 'nondim')
+  
+  CS%id_buoy_input2 = register_diag_field('ocean_model', 'buoy_input2', &
+       diag%axesTL, Time, 'Second input to the buoyancy flux ANN: vorticity in upper layer at latitude directly below inference point', 'nondim')  
+  CS%id_buoy_input11 = register_diag_field('ocean_model', 'buoy_input11', &
+       diag%axesTL, Time, '11th input to the buoyancy flux ANN: stretch rate in upper layer at latitude directly below inference point', 'nondim')  
+  CS%id_buoy_input20 = register_diag_field('ocean_model', 'buoy_input20', &
+       diag%axesTL, Time, '20th input to the buoyancy flux ANN: strain rate in upper layer at latitude directly below inference point', 'nondim')  
+  CS%id_buoy_input29 = register_diag_field('ocean_model', 'buoy_input29', &
+       diag%axesTL, Time, '29th input to the buoyancy flux ANN: zonal gradient in interface height at latitude directly below inference point', 'nondim')
+  CS%id_buoy_input38 = register_diag_field('ocean_model', 'buoy_input38', &
+       diag%axesTL, Time, '38th input to the buoyancy flux ANN: meridional gradient in interface height at latitude directly below inference point', 'nondim')
+  CS%id_buoy_output1 = register_diag_field('ocean_model', 'buoy_output1', &
+       diag%axesTL, Time, 'First output from the buoyancy ANN: zonal dual form stress', 'nondim')
+  CS%id_buoy_output2 = register_diag_field('ocean_model', 'buoy_output2', &
+       diag%axesTL, Time, 'Second output from the buoyancy ANN: zonal dual form stress', 'nondim')
 
 
   ! Registering fields for debugging purposes
@@ -499,6 +549,19 @@ subroutine EPF_init(Time, G, GV, US, param_file, diag, CS, use_EPF_ANN)
   allocate(CS%mom_input7(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%mom_input8(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
   allocate(CS%mom_input9(SZI_(G),SZJ_(G),SZK_(GV)), source=0.)
+
+  allocate(CS%buoy_input5(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input14(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input23(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input32(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input41(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input2(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input11(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input20(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input29(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_input38(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_output1(SZI_(G),SZJ_(G)), source=0.)
+  allocate(CS%buoy_output2(SZI_(G),SZJ_(G)), source=0.)
   subroundoff_Cor = 1e-30 * US%T_to_s
   ! Precomputing f
   do j=js-1,je+1 ; do i=is-1,ie+1
@@ -821,10 +884,6 @@ subroutine compute_intfc_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
   real, dimension(SZIB_(G), SZJ_(G), SZK_(GV)+1) :: &
         slope_x, &
         slope_y
-  
-!   real, dimension(SZIB_(G), SZJ_(G), SZK_(GV)+1) :: & ! 
-!         intfc_stress_x, &
-!         intfc_stress_y
 
   real, dimension(SZI_(G),SZJ_(G)) :: &
         sqr_h, & ! Sum of squares in h points
@@ -859,9 +918,8 @@ subroutine compute_intfc_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
       
       CS%slope_x_top(i,j,k) = 0.5 * (( (CS%slope_x(I-1,j,k) + CS%slope_x(I,j,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j) 
       CS%slope_y_top(i,j,k) = 0.5 * (( (CS%slope_y(i,J-1,k) + CS%slope_y(i,J,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j)
-      CS%slope_x_bot(i,j,k) = 0.5 * ( (CS%slope_x(I-1,j,k+1) + CS%slope_x(I,j,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
-      CS%slope_y_bot(i,j,k) = 0.5 * ( (CS%slope_y(i,J-1,k+1) + CS%slope_y(i,J,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
-
+      ! CS%slope_x_bot(i,j,k) = 0.5 * ( (CS%slope_x(I-1,j,k+1) + CS%slope_x(I,j,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
+      ! CS%slope_y_bot(i,j,k) = 0.5 * ( (CS%slope_y(i,J-1,k+1) + CS%slope_y(i,J,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
 
       sqr_eta_h(i,j) = (CS%slope_x_top(i,j,k)**2) + (CS%slope_y_top(i,j,k)**2)
       sqr_h(i,j) = (CS%sh_xx(i,j,k)**2) + (CS%sh_xy_h(i,j,k)**2) + (CS%vort_xy_h(i,j,k)**2)
@@ -891,12 +949,27 @@ subroutine compute_intfc_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
                 x_intfc(n) = CS%vort_xy_h(ii,jj,k-1) / (input_norm_mom + CS%subroundoff_shear)
                 x_intfc(n+stencil_points) = CS%sh_xx(ii,jj,k-1) / (input_norm_mom + CS%subroundoff_shear)
                 x_intfc(n + (2*stencil_points)) = CS%sh_xy_h(ii,jj,k-1) / (input_norm_mom + CS%subroundoff_shear)
-                x_intfc(n + (3*stencil_points)) = CS%slope_x(ii,jj,k) / (input_norm_buoy + CS%subroundoff_shear)
-                x_intfc(n + (4*stencil_points)) = CS%slope_y(ii,jj,k) / (input_norm_buoy + CS%subroundoff_shear)
+                x_intfc(n + (3*stencil_points)) = CS%slope_x_top(ii,jj,k) / (input_norm_buoy + CS%subroundoff_shear)
+                x_intfc(n + (4*stencil_points)) = CS%slope_y_top(ii,jj,k) / (input_norm_buoy + CS%subroundoff_shear)
                 n = n + 1
               enddo;enddo
+              
               call ANN_apply(x_intfc, y_intfc, CS%ann_instance_intfc)
 
+              if (CS%debug_buoyANN) then
+                CS%buoy_input5(i,j) = x_intfc(5)
+                CS%buoy_input14(i,j) = x_intfc(14)
+                CS%buoy_input23(i,j) = x_intfc(23)
+                CS%buoy_input32(i,j) = x_intfc(32)
+                CS%buoy_input41(i,j) = x_intfc(41)
+                CS%buoy_input2(i,j) = x_intfc(2)
+                CS%buoy_input11(i,j) = x_intfc(11)
+                CS%buoy_input20(i,j) = x_intfc(20)
+                CS%buoy_input29(i,j) = x_intfc(29)
+                CS%buoy_input38(i,j) = x_intfc(38)
+                CS%buoy_output1(i,j) = y_intfc(1)
+                CS%buoy_output2(i,j) = y_intfc(2)
+              endif
               CS%Txz(i,j,k) = y_intfc(1) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
               CS%Tyz(i,j,k) = y_intfc(2) * CS%Delsq_h(i,j) * CS%Coriolis_h(i,j) * input_norm_mom * input_norm_buoy
             enddo; enddo
@@ -912,8 +985,8 @@ subroutine compute_intfc_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
                 x_intfc(n + (3*stencil_points)) = CS%vort_xy_h(ii,jj,k) / (CS%mom_norm_h(i,j,k) + CS%subroundoff_shear)
                 x_intfc(n + (4*stencil_points)) = CS%sh_xx(ii,jj,k) / (CS%mom_norm_h(i,j,k) + CS%subroundoff_shear)
                 x_intfc(n + (5*stencil_points)) = CS%sh_xy_h(ii,jj,k) / (CS%mom_norm_h(i,j,k) + CS%subroundoff_shear)
-                x_intfc(n + (6*stencil_points)) = CS%slope_x(ii,jj,k) / (CS%buoy_norm_h(i,j,k) + CS%subroundoff_shear)
-                x_intfc(n + (7*stencil_points)) = CS%slope_y(ii,jj,k) / (CS%buoy_norm_h(i,j,k) + CS%subroundoff_shear)
+                x_intfc(n + (6*stencil_points)) = CS%slope_x_top(ii,jj,k) / (CS%buoy_norm_h(i,j,k) + CS%subroundoff_shear)
+                x_intfc(n + (7*stencil_points)) = CS%slope_y_top(ii,jj,k) / (CS%buoy_norm_h(i,j,k) + CS%subroundoff_shear)
                 n = n+1
               enddo; enddo
               call ANN_apply(x_intfc, y_intfc, CS%ann_instance_intfc)
@@ -1150,12 +1223,6 @@ subroutine compute_centre_stress_ANN_stencil(h, tv, G, GV, CS, US, VarMix, OBC)
       CS%vort_xy_h(i,j,k) = 0.25 * ( (CS%vort_xy(I-1,J-1,k) + CS%vort_xy(I,J,k)) &
                          + (CS%vort_xy(I-1,J,k) + CS%vort_xy(I,J-1,k)) ) * G%mask2dT(i,j)* CS%depth_mask(i,j,k)
       
-      ! CS%slope_x_top(i,j,k) = 0.5 * (( (CS%slope_x(I-1,j,k) + CS%slope_x(I,j,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j) 
-      ! CS%slope_y_top(i,j,k) = 0.5 * (( (CS%slope_y(i,J-1,k) + CS%slope_y(i,J,k)))* CS%depth_mask(i,j,k)) * G%mask2dT(i,j)
-      ! CS%slope_x_bot(i,j,k) = 0.5 * ( (CS%slope_x(I-1,j,k+1) + CS%slope_x(I,j,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
-      ! CS%slope_y_bot(i,j,k) = 0.5 * ( (CS%slope_y(i,J-1,k+1) + CS%slope_y(i,J,k+1)) ) * G%mask2dT(i,j) * CS%depth_mask(i,j,k)
-
-      ! sqr_eta_h(i,j) = (CS%slope_x_top(i,j,k)**2) + (CS%slope_y_top(i,j,k)**2)
       sqr_h(i,j) = (CS%sh_xx(i,j,k)**2) + (CS%sh_xy_h(i,j,k)**2) + (CS%vort_xy_h(i,j,k)**2)
       
       CS%mom_norm_h(i,j,k) = sqrt(sqr_h(i,j))
@@ -1477,6 +1544,21 @@ subroutine EPF_lateral_stress(u, v, h, tv, diffu, diffv, G, GV, CS, &
   if (CS%id_mom_input8 > 0) call post_data(CS%id_mom_input8, CS%mom_input8, CS%diag)
   if (CS%id_mom_input9 > 0) call post_data(CS%id_mom_input9, CS%mom_input9, CS%diag)
 
+  if (CS%id_buoy_input5 > 0) call post_data(CS%id_buoy_input5, CS%buoy_input5, CS%diag)
+  if (CS%id_buoy_input14 > 0) call post_data(CS%id_buoy_input14, CS%buoy_input14, CS%diag)
+  if (CS%id_buoy_input23 > 0) call post_data(CS%id_buoy_input23, CS%buoy_input23, CS%diag)
+  if (CS%id_buoy_input32 > 0) call post_data(CS%id_buoy_input32, CS%buoy_input32, CS%diag)
+  if (CS%id_buoy_input41 > 0) call post_data(CS%id_buoy_input41, CS%buoy_input41, CS%diag)
+  if (CS%id_buoy_input2 > 0) call post_data(CS%id_buoy_input2, CS%buoy_input2, CS%diag)
+  if (CS%id_buoy_input11 > 0) call post_data(CS%id_buoy_input11, CS%buoy_input11, CS%diag)
+  if (CS%id_buoy_input20 > 0) call post_data(CS%id_buoy_input20, CS%buoy_input20, CS%diag)
+  if (CS%id_buoy_input29 > 0) call post_data(CS%id_buoy_input29, CS%buoy_input29, CS%diag)
+  if (CS%id_buoy_input38 > 0) call post_data(CS%id_buoy_input38, CS%buoy_input38, CS%diag)
+
+  if (CS%id_buoy_output1 > 0) call post_data(CS%id_buoy_output1, CS%buoy_output1, CS%diag)
+  if (CS%id_buoy_output2 > 0) call post_data(CS%id_buoy_output2, CS%buoy_output2, CS%diag)
+
+
 
   call cpu_clock_end(CS%id_clock_post)
 
@@ -1541,6 +1623,19 @@ subroutine EPF_end(CS)
   deallocate(CS%mom_input7)
   deallocate(CS%mom_input8)
   deallocate(CS%mom_input9)
+
+  deallocate(CS%buoy_input5)
+  deallocate(CS%buoy_input14)
+  deallocate(CS%buoy_input23)
+  deallocate(CS%buoy_input32)
+  deallocate(CS%buoy_input41)
+  deallocate(CS%buoy_input2)
+  deallocate(CS%buoy_input11)
+  deallocate(CS%buoy_input20)
+  deallocate(CS%buoy_input29)
+  deallocate(CS%buoy_input38)
+  deallocate(CS%buoy_output1)
+  deallocate(CS%buoy_output2)
   
 end subroutine EPF_end
 
